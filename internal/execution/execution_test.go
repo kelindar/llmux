@@ -555,6 +555,53 @@ func TestClosure(t *testing.T) {
 	}
 }
 
+func TestOutputOwnership(t *testing.T) {
+	t.Run("agent mutates after emit", func(t *testing.T) {
+		media := chat.InlineMedia("image/png", []byte{1, 2, 3})
+		agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			item := chat.Item{
+				Type:    chat.ItemMedia,
+				Status:  chat.StatusCompleted,
+				Role:    chat.RoleAssistant,
+				Content: []chat.Part{chat.ImagePart(media)},
+			}
+			require.NoError(t, emit(chat.Event{Type: chat.EventItem, Item: item}))
+			item.Content[0].Media.Data[0] = 9
+			return chat.Outcome{Status: chat.StatusCompleted}, nil
+		}}
+		result, err := Run(context.Background(), &chat.Request{}, agent, chat.DefaultLimits(), nil)
+		require.NoError(t, err)
+		require.Len(t, result.Items, 1)
+		assert.Equal(t, byte(1), result.Items[0].Content[0].Media.Data[0])
+	})
+
+	t.Run("result owns transferred items", func(t *testing.T) {
+		agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Text("owned"))
+		}}
+		result, err := Run(context.Background(), &chat.Request{}, agent, chat.DefaultLimits(), nil)
+		require.NoError(t, err)
+		require.Len(t, result.Items, 1)
+		result.Items[0].Content[0].Text = "caller"
+		assert.Equal(t, "caller", result.Items[0].Content[0].Text)
+	})
+
+	t.Run("event item delivery is a borrow", func(t *testing.T) {
+		agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Text("hello"))
+		}}
+		result, err := Run(context.Background(), &chat.Request{}, agent, chat.DefaultLimits(), func(event chat.Event) error {
+			if event.Type == chat.EventItem && len(event.Item.Content) > 0 {
+				event.Item.Content[0].Text = "borrowed"
+			}
+			return nil
+		})
+		require.NoError(t, err)
+		require.Len(t, result.Items, 1)
+		assert.Equal(t, "borrowed", result.Items[0].Content[0].Text)
+	})
+}
+
 func BenchmarkEventApply(b *testing.B) {
 	agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		require.NoError(b, emit(chat.ToolStart("call_1", "search")))

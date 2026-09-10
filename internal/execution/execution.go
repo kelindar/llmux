@@ -214,7 +214,9 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
-			event.Item = s.items[len(s.items)-1].Clone()
+			// Borrow the stored item for the synchronous onEvent delivery.
+			// Nested data stays owned by eventState; callers must not mutate it.
+			event.Item = s.items[len(s.items)-1]
 			event.ItemID = event.Item.ID
 			normalized = append(normalized, event)
 
@@ -231,7 +233,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
-			event.Item = s.items[len(s.items)-1].Clone()
+			event.Item = s.items[len(s.items)-1]
 			event.ItemID = event.Item.ID
 			event.CallID = item.CallID
 			event.Name = item.Name
@@ -262,7 +264,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
-			event.Item = s.items[len(s.items)-1].Clone()
+			event.Item = s.items[len(s.items)-1]
 			event.ItemID = event.Item.ID
 			normalized = append(normalized, event)
 
@@ -276,7 +278,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
-			event.Item = s.items[len(s.items)-1].Clone()
+			event.Item = s.items[len(s.items)-1]
 			event.ItemID = event.Item.ID
 			normalized = append(normalized, event)
 
@@ -287,7 +289,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
-			event.Item = s.items[len(s.items)-1].Clone()
+			event.Item = s.items[len(s.items)-1]
 			event.ItemID = event.Item.ID
 			normalized = append(normalized, event)
 		}
@@ -374,10 +376,9 @@ type Result struct {
 }
 
 func (s *eventState) result(outcome chat.Outcome) Result {
-	items := make([]chat.Item, len(s.items))
-	for n, item := range s.items {
-		items[n] = item.Clone()
-	}
+	// Transfer ownership; eventState is discarded after Run returns.
+	items := s.items
+	s.items = nil
 	return Result{Items: items, Outcome: outcome}
 }
 

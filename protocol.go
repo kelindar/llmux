@@ -203,8 +203,9 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Accep
 
 func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state chat.ResponseState) {
 	meta.State = state
+	// state.Output is already independent (Acceptance.Replay was Clone'd).
 	result := execution.Result{
-		Items:   cloneItems(state.Output),
+		Items:   state.Output,
 		Outcome: outcomeFromState(state),
 	}
 	if parsed.Stream {
@@ -270,7 +271,7 @@ func (h *Handler) serveStream(
 
 	state := buildResponseState(&parsed.Request, meta, result, runErr)
 	meta.State = state
-	finalErr := h.finalizeTurn(runCtx, parsed, meta, state, runErr)
+	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		if delivering && stream.Started() {
@@ -318,7 +319,7 @@ func (h *Handler) serveOrdinary(
 	})
 	state := buildResponseState(&parsed.Request, meta, result, runErr)
 	meta.State = state
-	finalErr := h.finalizeTurn(runCtx, parsed, meta, state, runErr)
+	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		writeProtocolError(w, parsed.Kind, runErr)
@@ -338,17 +339,18 @@ func (h *Handler) serveOrdinary(
 	writeJSON(w, http.StatusOK, body)
 }
 
-func (h *Handler) finalizeTurn(
+func (h *Handler) finishTurn(
 	runCtx context.Context,
+	acceptance chat.Acceptance,
 	parsed parsedRequest,
 	meta responseMeta,
 	state chat.ResponseState,
 	runErr error,
 ) error {
-	if h.lifecycle == nil {
+	if acceptance.Finish == nil {
 		return nil
 	}
-	return h.lifecycle.Finalize(runCtx, &chat.TurnResult{
+	return acceptance.Finish(runCtx, &chat.TurnResult{
 		ID:      meta.ID,
 		Created: meta.Created,
 		Request: &parsed.Request,
@@ -360,7 +362,8 @@ func (h *Handler) finalizeTurn(
 
 func buildResponseState(req *chat.Request, meta responseMeta, result execution.Result, runErr error) chat.ResponseState {
 	state := chat.ResponseState{
-		Output:      cloneItems(result.Items),
+		// Take ownership of execution output; Result is not retained after this.
+		Output:      result.Items,
 		Usage:       result.Outcome.Usage,
 		Metadata:    chat.CloneMetadata(meta.State.Metadata),
 		Store:       req.Retain,

@@ -35,7 +35,6 @@ type memoryLife struct {
 	ctxSeen      atomic.Bool
 	failOnce     atomic.Bool
 	allowNoStore bool
-	lastKey      string
 	boundCleanup bool
 }
 
@@ -66,7 +65,6 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 	defer m.mu.Unlock()
 	m.accepts++
 	key := turn.IdempotencyKey
-	m.lastKey = key
 	if turn.Request.Store != nil && !*turn.Request.Store && !m.allowNoStore {
 		return chat.Acceptance{}, chat.Unsupported("store", "application requires store")
 	}
@@ -92,22 +90,25 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 	if m.boundCleanup {
 		parentCtx := context.WithValue(ctx, ctxKey{}, "cleanup")
 		// Run longer than the cleanup budget so a stale Accept-time timeout
-		// would already have expired before Finalize begins.
+		// would already have expired before Finish begins.
 		runCtx, cancel := context.WithTimeout(parentCtx, 150*time.Millisecond)
 		_ = cancel
 		acc.Context = runCtx
 		acc.Durable = true
 	}
+	acc.Finish = func(ctx context.Context, result *chat.TurnResult) error {
+		return m.finish(ctx, key, result)
+	}
 	return acc, nil
 }
 
-func (m *memoryLife) Finalize(ctx context.Context, result *chat.TurnResult) error {
+func (m *memoryLife) finish(ctx context.Context, key string, result *chat.TurnResult) error {
 	if m.boundCleanup {
 		cleanupTimeout := 50 * time.Millisecond
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		if cleanupCtx.Value(ctxKey{}) == nil {
-			return errors.New("finalize context missing value")
+			return errors.New("finish context missing value")
 		}
 		started := time.Now()
 		select {
@@ -133,7 +134,6 @@ func (m *memoryLife) Finalize(ctx context.Context, result *chat.TurnResult) erro
 	if m.failOnce.Swap(false) {
 		return errors.New("persist failed")
 	}
-	key := m.lastKey
 	if key != "" {
 		delete(m.running, key)
 		if result.State.Store {
@@ -207,6 +207,52 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusOK, second.Code)
 		assert.Equal(t, int32(1), calls.Load())
 		assert.Equal(t, "resp_app", decodeResponse(t, second)["id"])
+	})
+
+	t.Run("replay clone isolates encoding", func(t *testing.T) {
+		life := newMemoryLife()
+		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, emit(chat.Text("stable"))
+		}), chat.Capabilities{Continuation: true}, WithLifecycle(life))
+		headers := map[string]string{"Idempotency-Key": "replay-iso"}
+		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
+		require.Equal(t, http.StatusOK, first.Code)
+		assert.Contains(t, first.Body.String(), "stable")
+
+		life.mu.Lock()
+		entry := life.byKey["replay-iso"]
+		require.NotEmpty(t, entry.state.Output)
+		entry.state.Output[0].Content[0].Text = "mutated-store"
+		before := entry.state.Clone()
+		life.byKey["replay-iso"] = entry
+		life.mu.Unlock()
+
+		replay := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
+		require.Equal(t, http.StatusOK, replay.Code)
+		assert.Contains(t, replay.Body.String(), "mutated-store")
+
+		life.mu.Lock()
+		after := life.byKey["replay-iso"].state
+		life.mu.Unlock()
+		assert.Equal(t, before.Output[0].Content[0].Text, after.Output[0].Content[0].Text)
+	})
+
+	t.Run("finalize store clone leaves response", func(t *testing.T) {
+		life := newMemoryLife()
+		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, emit(chat.Text("live"))
+		}), chat.Capabilities{Continuation: true}, WithLifecycle(life))
+		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, map[string]string{"Idempotency-Key": "live"})
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, rec.Body.String(), "live")
+
+		life.mu.Lock()
+		entry := life.byKey["live"]
+		entry.state.Output[0].Content[0].Text = "stored-only"
+		life.byKey["live"] = entry
+		life.mu.Unlock()
+		assert.Contains(t, rec.Body.String(), "live")
+		assert.NotContains(t, rec.Body.String(), "stored-only")
 	})
 
 	t.Run("in progress conflict", func(t *testing.T) {

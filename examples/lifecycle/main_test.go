@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kelindar/llmux"
 	"github.com/kelindar/llmux/chat"
@@ -21,7 +22,7 @@ func TestLifecycleExample(t *testing.T) {
 		if len(req.Turn) > 0 && len(req.Turn[0].Content) > 0 {
 			text = req.Turn[0].Content[0].Text
 		}
-		return chat.Outcome{}, emit(chat.Text("echo: " + text))
+		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
 	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
 		return agent, chat.Capabilities{Continuation: true}, nil
@@ -68,7 +69,7 @@ func TestIdempotencyKey(t *testing.T) {
 	calls := 0
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		calls++
-		return chat.Outcome{}, emit(chat.Text("ok"))
+		return chat.Outcome{}, emit.Text("ok")
 	})
 	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
 		return agent, chat.Capabilities{Continuation: true}, nil
@@ -83,7 +84,6 @@ func TestIdempotencyKey(t *testing.T) {
 		assert.Equal(t, 0, calls)
 		store.mu.Lock()
 		assert.False(t, store.running["same-key"])
-		assert.Empty(t, store.pending)
 		store.mu.Unlock()
 	})
 
@@ -93,6 +93,26 @@ func TestIdempotencyKey(t *testing.T) {
 		assert.Equal(t, 1, calls)
 		assert.Contains(t, accepted.Body.String(), "ok")
 	})
+}
+
+func TestDurableExample(t *testing.T) {
+	store := newStore()
+	agent := chat.AgentFunc(func(ctx context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		assert.True(t, time.Until(deadline) > 0)
+		return chat.Outcome{}, emit.Text("durable")
+	})
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{Continuation: true, Extensions: map[string]bool{"x-durable": true}}, nil
+	})
+	mux := http.NewServeMux()
+	handler := llmux.New(resolver, llmux.WithLifecycle(store), llmux.WithContinuationStore(store), llmux.WithStoreDefault(true))
+	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
+
+	rec := post(t, mux, `{"model":"agent/basic","store":true,"input":"x","x-durable":true}`, "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "durable")
 }
 
 func post(t *testing.T, h http.Handler, body, key string) *httptest.ResponseRecorder {

@@ -30,6 +30,9 @@ func (f AgentFunc) Run(ctx context.Context, req *Request, emit Emit) (Outcome, e
 type Resolver func(context.Context, string) (Agent, Capabilities, error)
 
 // Emit is the serial event function passed to Agent.Run.
+// Emit copies nested item data into execution state before returning, so the
+// agent may retain and mutate the emitted Event afterward. Delivery callbacks
+// receive a borrow of the stored item for EventItem and must not mutate it.
 type Emit func(Event) error
 
 var (

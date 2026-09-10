@@ -1,5 +1,12 @@
-// Package main shows an in-memory Lifecycle: accept, turn-local continuation,
-// idempotency, and GET retrieval. It is illustrative, not production storage.
+// Package main shows an in-memory Lifecycle: Accept returns request-local
+// Finish state, Agent runs, Finish persists. Also covers continuation Load,
+// idempotency replay, and GET retrieval via ResponsesBody.
+//
+// Illustrative storage limitations (not production):
+//   - process-local maps; nothing survives restart
+//   - no authentication or multi-tenant isolation
+//   - sequential response IDs are guessable
+//   - Load walks the parent chain under one lock
 package main
 
 import (
@@ -20,15 +27,20 @@ import (
 
 func main() {
 	store := newStore()
+
+	// Ordinary agent: Emit methods for common output.
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		text := "turn"
 		if len(req.Turn) > 0 && len(req.Turn[0].Content) > 0 {
 			text = req.Turn[0].Content[0].Text
 		}
-		return chat.Outcome{}, emit(chat.Text("echo: " + text))
+		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
 	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{Continuation: true}, nil
+		return agent, chat.Capabilities{
+			Continuation: true,
+			Extensions:   map[string]bool{"x-durable": true},
+		}, nil
 	})
 
 	mux := http.NewServeMux()
@@ -38,7 +50,7 @@ func main() {
 		llmux.WithStoreDefault(true),
 	)
 	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
-	mux.HandleFunc("GET /api/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		rec, ok := store.get(r.PathValue("id"))
 		if !ok {
 			http.NotFound(w, r)
@@ -53,7 +65,7 @@ func main() {
 		_ = json.MarshalWrite(w, body)
 	})
 
-	log.Println("listening on http://127.0.0.1:8080 (POST /api/responses)")
+	log.Println("listening on http://127.0.0.1:8080 (POST /api/v1/responses)")
 	if err := http.ListenAndServe("127.0.0.1:8080", mux); err != nil {
 		log.Fatal(err)
 	}
@@ -68,20 +80,21 @@ type turnRecord struct {
 	State   chat.ResponseState
 }
 
+// store keeps durable responses and cross-request idempotency.
+// Per-request reconnect maps (pending id→key, cancels) are unnecessary:
+// Accept closes over key and cancel on Acceptance.Finish.
 type store struct {
 	mu      sync.Mutex
 	seq     atomic.Int64
 	byID    map[string]turnRecord
-	byKey   map[string]string
-	pending map[string]string
-	running map[string]bool
+	byKey   map[string]string // completed idempotency key → response id
+	running map[string]bool   // in-flight idempotency keys
 }
 
 func newStore() *store {
 	return &store{
 		byID:    make(map[string]turnRecord),
 		byKey:   make(map[string]string),
-		pending: make(map[string]string),
 		running: make(map[string]bool),
 	}
 }
@@ -117,6 +130,7 @@ func (s *store) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Accept
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Reject before reserving or mutating running state.
 	switch {
 	case turn.Request.Store != nil && !*turn.Request.Store:
 		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
@@ -149,48 +163,54 @@ func (s *store) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Accept
 	n := s.seq.Add(1)
 	id := "resp_" + strconv.FormatInt(n, 10)
 	acc := chat.Acceptance{ID: id, Created: n}
-	if key != "" {
-		s.pending[id] = key
-	}
+
+	var cancel context.CancelFunc
+	// Durable execution (opt-in): detach client cancel, bound the run.
+	// Accept starts the timeout; Finish releases cancel.
 	if turn.Request.Controls.Extensions["x-durable"] != nil {
+		const runLimit = 30 * time.Second
+		var runCtx context.Context
+		runCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), runLimit)
 		acc.Durable = true
-		acc.Context = context.WithoutCancel(ctx)
+		acc.Context = runCtx
 	}
-	return acc, nil
-}
 
-func (s *store) Finalize(ctx context.Context, result *chat.TurnResult) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	defer cancel()
+	req := turn.Request
+	acc.Finish = func(ctx context.Context, result *chat.TurnResult) error {
+		if cancel != nil {
+			cancel()
+		}
+		// Execution context may already be cancelled; start cleanup here.
+		ctx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer stop()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := s.pending[result.ID]
-	delete(s.pending, result.ID)
-	if key != "" {
-		delete(s.running, key)
-	}
-	if !result.State.Store {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if key != "" {
+			delete(s.running, key)
+		}
+		if !result.State.Store {
+			return nil
+		}
+		parent := ""
+		if result.Request.Previous != nil {
+			parent = *result.Request.Previous
+		}
+		s.byID[result.ID] = turnRecord{
+			ID:      result.ID,
+			Created: result.Created,
+			Parent:  parent,
+			Turn:    cloneItems(req.Turn),
+			Request: result.Request,
+			State:   result.State.Clone(),
+		}
+		if key != "" {
+			s.byKey[key] = result.ID
+		}
+		_ = ctx
 		return nil
 	}
-	parent := ""
-	if result.Request.Previous != nil {
-		parent = *result.Request.Previous
-	}
-	rec := turnRecord{
-		ID:      result.ID,
-		Created: result.Created,
-		Parent:  parent,
-		Turn:    cloneItems(result.Request.Turn),
-		Request: result.Request,
-		State:   result.State.Clone(),
-	}
-	s.byID[result.ID] = rec
-	if key != "" {
-		s.byKey[key] = result.ID
-	}
-	_ = ctx // keep values available for real persistence work
-	return nil
+	return acc, nil
 }
 
 func (s *store) get(id string) (turnRecord, bool) {

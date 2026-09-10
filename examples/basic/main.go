@@ -11,7 +11,7 @@ import (
 
 func main() {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-		return chat.Outcome{}, emit(chat.Text("received " + req.Input[0].Content[0].Text))
+		return chat.Outcome{}, emit.Text("received " + req.Input[0].Content[0].Text)
 	})
 	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
 		return agent, chat.Capabilities{}, nil

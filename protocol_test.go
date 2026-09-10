@@ -128,10 +128,14 @@ type testLifecycle struct {
 
 func (l *testLifecycle) Accept(_ context.Context, _ *chat.TurnRequest) (chat.Acceptance, error) {
 	l.accepts++
-	return chat.Acceptance{}, nil
+	return chat.Acceptance{
+		Finish: func(ctx context.Context, result *chat.TurnResult) error {
+			return l.finish(ctx, result)
+		},
+	}, nil
 }
 
-func (l *testLifecycle) Finalize(_ context.Context, result *chat.TurnResult) error {
+func (l *testLifecycle) finish(_ context.Context, result *chat.TurnResult) error {
 	l.finals++
 	clone := *result
 	if result.Request != nil {

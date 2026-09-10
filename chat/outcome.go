@@ -59,6 +59,10 @@ func (o Outcome) Validate() error {
 // finalization, replay, and retrieval. Identity (ID) and creation time remain
 // separate and application-controlled.
 //
+// When passed to Acceptance.Finish, nested data is shared with the response
+// subsequently encoded. Finish callbacks must treat it as read-only and call
+// Clone before retaining or modifying it.
+//
 // Error is sanitized public error only. Operational Go errors stay on
 // TurnResult.Err and are never copied into Error.Message automatically.
 type ResponseState struct {

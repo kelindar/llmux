@@ -14,10 +14,10 @@ func main() {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		for _, part := range req.Input[0].Content {
 			if part.Type == chat.PartImage && part.Media != nil {
-				return chat.Outcome{}, emit(chat.Text(fmt.Sprintf("received %s", part.Media.MIMEType)))
+				return chat.Outcome{}, emit.Text(fmt.Sprintf("received %s", part.Media.MIMEType))
 			}
 		}
-		return chat.Outcome{}, emit(chat.Text("no image"))
+		return chat.Outcome{}, emit.Text("no image")
 	})
 	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
 		return agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityImage}, nil

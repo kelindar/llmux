@@ -27,7 +27,7 @@ import (
 )
 
 agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-	return chat.Outcome{}, emit(chat.Text("hello"))
+	return chat.Outcome{}, emit.Text("hello")
 })
 
 resolver := chat.Resolver(func(ctx context.Context, target string) (chat.Agent, chat.Capabilities, error) {
@@ -48,9 +48,9 @@ the ordered, backpressure-aware `Emit` callback; returning from `Run` closes
 emission. `Emit` is serial by contract, and a concurrent call returns
 `chat.ErrConcurrentEmit`. Agents should stop when `Emit` returns an error.
 
-Complete output is emitted with constructors such as `chat.Text`,
-`chat.Tool`, and `chat.MediaItem`. Streaming uses
-`chat.TextDelta` / `chat.TextDone(itemID)` and
+Complete output is emitted with `emit.Text`, `emit.Tool`, and related helpers,
+or by constructing events with `chat.Text` / `chat.Tool` and calling `emit(event)`.
+Streaming uses `emit.Delta` plus `chat.TextDone(itemID)`, and
 `chat.ToolStart` / `chat.ToolDelta` / `chat.ToolDone(callID)`.
 Done events are closure signals; final text and tool arguments come from
 execution's accumulated state.
@@ -133,12 +133,23 @@ no equivalent mapping in this compatibility profile.
 
 Applications with their own durable execution and response storage can take
 control of response identity, acceptance, and terminal persistence through
-`Lifecycle`:
+`Lifecycle`. Accept returns per-request state on `Acceptance`; set
+`Acceptance.Finish` to close that request. `Agent` remains the sole
+execution owner.
 
 ```go
 type Lifecycle interface {
 	Accept(context.Context, *TurnRequest) (Acceptance, error)
-	Finalize(context.Context, *TurnResult) error
+}
+
+type Acceptance struct {
+	ID       string
+	Created  int64
+	Replay   *ResponseState
+	Durable  bool
+	Context  context.Context
+	Activity bool
+	Finish   func(context.Context, *TurnResult) error
 }
 ```
 
@@ -146,16 +157,21 @@ Ordering when a Lifecycle is configured:
 
 1. Validate the request, resolve effective store policy, load continuation.
 2. `Accept` — reserve identity, reject conflicts, or return an idempotent
-   `*ResponseState` replay.
+   `*ResponseState` replay. Capture request-local resources (idempotency
+   key, durable cancel) on `Acceptance.Finish` instead of reconnecting
+   through global maps.
 3. `Agent.Run` (skipped on replay). `Acceptance.Durable` detaches client
    disconnect from cancellation; supply a bounded `Acceptance.Context` for
    production. Durable is not a job system.
-4. `Finalize` — exactly once for every accepted execution, with the
-   execution context. That context may already be cancelled. Finalize owns
+4. `Finish` — exactly once for every accepted execution, with the
+   execution context. That context may already be cancelled. Finish owns
    any detached, bounded cleanup work, for example
    `context.WithTimeout(context.WithoutCancel(ctx), timeout)`. Not called
-   for Accept errors or completed replays.
-5. Advertise successful completion only after Finalize succeeds.
+   for Accept errors, completed replays, or when Finish is nil.
+   `TurnResult.State` shares nested data with the response encoded after
+   Finish returns: treat it as read-only and call `State.Clone()` before
+   retaining or modifying it.
+5. Advertise successful completion only after Finish succeeds.
 
 `ResponseState` is the shared client-visible payload for creation,
 finalization, replay, and `ResponsesBody` retrieval: status, output, usage,
@@ -185,14 +201,17 @@ encoder.
 ### Activity events
 
 Enable per request with `Acceptance.Activity` after inspecting application
-headers or extensions. Emit with `chat.Activity(name, json)` — Responses
+headers or extensions. Emit with `emit.Activity(name, json)` — Responses
 streams `response.activity.<name>` with a bounded JSON payload. Activity is
 never assistant output or continuation history, and is not translated to Chat
 or Anthropic. Keep application-specific response fields outside the standard
 envelope rather than mutating protocol objects.
 
 See [`examples/lifecycle`](examples/lifecycle) for an in-memory Accept /
-continuation / idempotency / retrieval sketch.
+continuation / idempotency / retrieval sketch. The ordinary path is the
+default; durable execution is an explicit opt-in with a bounded run context
+owned by Accept and released in Finish. Cleanup after cancellation starts
+inside Finish via `context.WithTimeout(context.WithoutCancel(ctx), …)`.
 
 ## Media and audio
 

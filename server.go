@@ -64,7 +64,7 @@ func WithContinuationStore(store chat.ContinuationStore) Option {
 }
 
 // WithLifecycle enables application-owned response identity, idempotent
-// acceptance, and terminal persistence.
+// acceptance, and terminal persistence via Acceptance.Finish.
 func WithLifecycle(life chat.Lifecycle) Option {
 	return func(h *Handler) { h.lifecycle = life }
 }
