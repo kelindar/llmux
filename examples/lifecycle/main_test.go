@@ -26,7 +26,7 @@ func TestLifecycleExample(t *testing.T) {
 		return agent, llmux.Capabilities{Continuation: true}, nil
 	})
 	mux := http.NewServeMux()
-	handler := llmux.New(resolver, llmux.WithLifecycle(store), llmux.WithContinuationStore(store))
+	handler := llmux.New(resolver, llmux.WithLifecycle(store), llmux.WithContinuationStore(store), llmux.WithStoreDefault(true))
 	mux.Handle("/api/", handler)
 	mux.HandleFunc("GET /api/v1/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		rec, ok := store.get(r.PathValue("id"))
@@ -34,7 +34,7 @@ func TestLifecycleExample(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		body, err := llmux.ResponsesBody(*rec.Request, rec.Outcome, rec.Output, rec.ID, rec.Created)
+		body, err := llmux.ResponsesBody(*rec.Request, rec.State, rec.ID, rec.Created)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -755,21 +755,40 @@ func (Adapter) Response(req contract.Request, result execution.Result, meta resp
 		}
 		output = append(output, value)
 	}
-	return responseObject(req, result.Outcome, meta, output), nil
+	state := meta.State
+	if len(state.Output) == 0 {
+		state.Output = result.Items
+	}
+	if state.Status == "" {
+		state.Status = result.Outcome.Status
+	}
+	if state.Usage == nil {
+		state.Usage = result.Outcome.Usage
+	}
+	return responseObject(req, meta, state, output), nil
 }
 
 // Render builds the same Responses envelope used for creation, replay, and
 // application-owned GET retrieval.
-func Render(req contract.Request, outcome contract.Outcome, items []contract.Item, id string, created int64) (any, error) {
-	return Adapter{}.Response(req, execution.Result{Items: items, Outcome: outcome}, responseMeta{
+func Render(req contract.Request, state contract.ResponseState, id string, created int64) (any, error) {
+	output := make([]any, 0, len(state.Output))
+	for _, item := range state.Output {
+		value, err := responseItem(item)
+		if err != nil {
+			return nil, err
+		}
+		output = append(output, value)
+	}
+	return responseObject(req, responseMeta{
 		ID:      id,
 		Created: created,
 		Model:   req.Target,
-	})
+		State:   state,
+	}, state, output), nil
 }
 
 // Stream returns an SSE encoder for Responses API streaming events.
-func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta responseMeta, limits contract.Limits) streamEncoder {
+func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta *responseMeta, limits contract.Limits) streamEncoder {
 	return &responsesStream{
 		writer:    &sseWriter{w: w, limits: limits},
 		request:   req,
@@ -781,23 +800,24 @@ func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta response
 	}
 }
 
-func responseStatus(outcome contract.Outcome) string {
-	if outcome.Status == "" {
+func responseStatus(state contract.ResponseState, outcome contract.Outcome) string {
+	switch {
+	case state.Status != "":
+		return string(state.Status)
+	case outcome.Status != "":
+		return string(outcome.Status)
+	default:
 		return string(contract.StatusCompleted)
 	}
-	return string(outcome.Status)
 }
 
-func responseObject(req contract.Request, outcome contract.Outcome, meta responseMeta, output []any) map[string]any {
-	store := false
-	if req.Controls.Store != nil {
-		store = *req.Controls.Store
-	}
+func responseObject(req contract.Request, meta responseMeta, state contract.ResponseState, output []any) map[string]any {
+	status := responseStatus(state, contract.Outcome{})
 	value := map[string]any{
 		"id":                   meta.ID,
 		"object":               "response",
 		"created_at":           meta.Created,
-		"status":               responseStatus(outcome),
+		"status":               status,
 		"error":                nil,
 		"incomplete_details":   nil,
 		"instructions":         nil,
@@ -806,12 +826,25 @@ func responseObject(req contract.Request, outcome contract.Outcome, meta respons
 		"parallel_tool_calls":  true,
 		"previous_response_id": nil,
 		"reasoning":            map[string]any{"effort": nil, "summary": nil},
-		"store":                store,
+		"store":                state.Store,
 		"temperature":          nil,
 		"text":                 map[string]any{"format": map[string]any{"type": "text"}},
 		"tool_choice":          "auto",
 		"tools":                []any{},
 		"top_p":                nil,
+		"metadata":             map[string]string{},
+	}
+	if state.CompletedAt > 0 {
+		value["completed_at"] = state.CompletedAt
+	}
+	if state.Error != nil {
+		value["error"] = map[string]any{"type": state.Error.Code, "code": state.Error.Code, "message": state.Error.Message}
+	}
+	if state.Incomplete != "" {
+		value["incomplete_details"] = map[string]any{"reason": state.Incomplete}
+	}
+	if len(state.Metadata) > 0 {
+		value["metadata"] = state.Metadata
 	}
 	if req.Instructions != "" {
 		value["instructions"] = req.Instructions
@@ -858,8 +891,8 @@ func responseObject(req contract.Request, outcome contract.Outcome, meta respons
 			value["tool_choice"] = req.Controls.ToolChoice.Mode
 		}
 	}
-	if outcome.Usage != nil {
-		value["usage"] = responseUsage(outcome.Usage)
+	if state.Usage != nil {
+		value["usage"] = responseUsage(state.Usage)
 	}
 	return value
 }
@@ -959,7 +992,7 @@ func responseFunctionOutput(parts []contract.Part) (any, error) {
 type responsesStream struct {
 	writer    *sseWriter
 	request   contract.Request
-	meta      responseMeta
+	meta      *responseMeta
 	sequence  int
 	indexes   map[string]int
 	text      map[string]string
@@ -983,7 +1016,10 @@ func (s *responsesStream) start() error {
 	if s.started {
 		return nil
 	}
-	base := responseObject(s.request, contract.Outcome{Status: contract.StatusInProgress}, s.meta, []any{})
+	state := s.meta.State
+	state.Status = contract.StatusInProgress
+	state.CompletedAt = 0
+	base := responseObject(s.request, *s.meta, state, []any{})
 	if err := s.emit("response.created", map[string]any{"response": base}); err != nil {
 		return err
 	}
@@ -1222,7 +1258,9 @@ func reasoningSummary(parts []contract.Part) []any {
 	return values
 }
 
-// Complete emits the response.completed event and closes the SSE stream.
+// Complete emits the terminal Responses SSE event matching the response status
+// and closes the stream. Failed and incomplete stored/replayed states use
+// response.failed / response.incomplete rather than response.completed.
 func (s *responsesStream) Complete(outcome contract.Outcome, items []contract.Item) error {
 	output := make([]any, 0, len(items))
 	for _, item := range items {
@@ -1235,7 +1273,24 @@ func (s *responsesStream) Complete(outcome contract.Outcome, items []contract.It
 	if err := s.start(); err != nil {
 		return err
 	}
-	if err := s.emit("response.completed", map[string]any{"response": responseObject(s.request, outcome, s.meta, output)}); err != nil {
+	state := s.meta.State
+	if state.Status == "" {
+		state.Status = outcome.Status
+	}
+	if state.Usage == nil {
+		state.Usage = outcome.Usage
+	}
+	if len(state.Output) == 0 {
+		state.Output = items
+	}
+	event := "response.completed"
+	switch state.Status {
+	case contract.StatusFailed, contract.StatusCancelled:
+		event = "response.failed"
+	case contract.StatusIncomplete:
+		event = "response.incomplete"
+	}
+	if err := s.emit(event, map[string]any{"response": responseObject(s.request, *s.meta, state, output)}); err != nil {
 		return err
 	}
 	return s.writer.done()
@@ -1250,8 +1305,16 @@ func (s *responsesStream) Fail(err error) error {
 	if startErr := s.start(); startErr != nil {
 		return startErr
 	}
-	response := responseObject(s.request, contract.Outcome{Status: contract.StatusFailed, StopReason: contract.StopError}, s.meta, []any{})
-	response["error"] = map[string]any{"type": apiErr.Code, "message": apiErr.Message}
+	state := s.meta.State
+	state.Status = contract.StatusFailed
+	copy := *apiErr
+	copy.Err = nil
+	state.Error = &copy
+	if state.CompletedAt == 0 {
+		state.CompletedAt = s.meta.Created
+	}
+	s.meta.State = state
+	response := responseObject(s.request, *s.meta, state, []any{})
 	if err := s.emit("response.failed", map[string]any{"response": response}); err != nil {
 		return err
 	}

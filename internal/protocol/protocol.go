@@ -31,10 +31,11 @@ type ParsedRequest struct {
 
 // Meta contains response identity shared by all protocol encoders.
 type Meta struct {
-	ID       string // response identifier assigned by the server or Lifecycle
-	Created  int64  // Unix timestamp when the response was created
-	Model    string // resolved model name echoed to the client
-	Activity bool   // when true, Responses may encode EventActivity frames
+	ID       string                 // response identifier assigned by the server or Lifecycle
+	Created  int64                  // Unix timestamp when the response was created
+	Model    string                 // resolved model name echoed to the client
+	Activity bool                   // when true, Responses may encode EventActivity frames
+	State    contract.ResponseState // client-visible status, error, metadata, and store
 }
 
 // StreamEncoder turns canonical events into one protocol's SSE lifecycle.
@@ -56,7 +57,9 @@ type Adapter interface {
 	// Response builds a non-streaming response body for result.
 	Response(contract.Request, execution.Result, Meta) (any, error)
 	// Stream returns an SSE encoder for the given response writer.
-	Stream(http.ResponseWriter, contract.Request, Meta, contract.Limits) StreamEncoder
+	// meta is retained for the stream lifetime so terminal ResponseState
+	// updates are visible to Complete.
+	Stream(http.ResponseWriter, contract.Request, *Meta, contract.Limits) StreamEncoder
 }
 
 // SSEWriter owns the shared HTTP/SSE mechanics. Protocol codecs only provide

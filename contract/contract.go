@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/kelindar/llmux/internal/identity"
 )
@@ -569,11 +570,11 @@ type Controls struct {
 	IncludeUsage       bool                      // Whether to include token usage in the response.
 	Structured         *StructuredOutput         // Structured JSON output schema.
 	PreviousResponseID *string                   // Prior response ID for continuation.
-	Store              *bool                     // When true, retain response content for retrieval/continuation; when false, do not.
+	Store              *bool                     // Wire store flag; nil when omitted. Effective policy is Request.Retain.
 	Reasoning          *Reasoning                // Reasoning effort and summary controls.
 	Audio              *AudioControls            // Chat Completions audio output controls.
 	ImageGeneration    bool                      // Whether image generation is requested.
-	Metadata           map[string]string         // Request metadata key-value pairs.
+	Metadata           map[string]string         // Request metadata; cloned into ResponseState at acceptance.
 	Extensions         map[string]jsontext.Value // Application extension payloads keyed by name.
 }
 
@@ -593,7 +594,12 @@ type OutputSpec struct {
 //   - Controls.PreviousResponseID names the prior response whose history
 //     was loaded; the application authorizes that load.
 //
-// Applications that persist turns should retain Turn and the Finalize output
+// Retain is the effective content-retention policy after applying the
+// handler's StoreDefault. Controls.Store remains the wire value (nil when
+// omitted). The handler sets Retain before Accept; applications must treat
+// the request as read-only afterward.
+//
+// Applications that persist turns should retain Turn and ResponseState.Output
 // rather than re-saving the full Input conversation on every response.
 type Request struct {
 	Target       string     // Agent target name selected by the resolver.
@@ -602,6 +608,7 @@ type Request struct {
 	Input        []Item     // Effective history+turn for Agent.Run.
 	Controls     Controls   // Generation and protocol controls.
 	Output       OutputSpec // Declared output modalities and format.
+	Retain       bool       // Effective content retention; set by the handler.
 }
 
 // Limits bound request, media, event, and accumulated response memory. Zero
@@ -662,10 +669,76 @@ type Usage struct {
 }
 
 // Outcome is the final agent result returned from Agent.Run.
+// Outcome cannot be in_progress; use ResponseState for retrieval of
+// non-terminal stored responses.
 type Outcome struct {
 	Status     Status     // Final lifecycle status for the run.
 	StopReason StopReason // Reason generation stopped, when applicable.
 	Usage      *Usage     // Token usage for the run, when reported.
+}
+
+// ResponseState is the client-visible response payload shared by creation,
+// finalization, replay, and retrieval. Response identity (ID) and creation
+// timestamp remain application-controlled and are supplied separately.
+//
+// Error is a sanitized public error only. Operational Go errors stay on
+// TurnResult.Err and are never copied into Error.Message automatically.
+//
+// Metadata is owned by this value after Clone; callers must Clone before
+// retaining across requests.
+type ResponseState struct {
+	Status      Status            // completed, failed, incomplete, cancelled, or in_progress
+	Output      []Item            // Output items for this response turn
+	Usage       *Usage            // Token usage when known
+	Error       *APIError         // Sanitized public error when status is failed
+	Incomplete  string            // incomplete_details.reason when status is incomplete
+	CompletedAt int64             // Unix completion time; zero while in_progress
+	Metadata    map[string]string // Response metadata captured at acceptance
+	Store       bool              // Effective content-retention policy
+}
+
+// Clone returns a deep copy safe for independent retention.
+func (s ResponseState) Clone() ResponseState {
+	out := s
+	if s.Output != nil {
+		out.Output = make([]Item, len(s.Output))
+		for i, item := range s.Output {
+			out.Output[i] = item.Clone()
+		}
+	}
+	if s.Usage != nil {
+		u := *s.Usage
+		out.Usage = &u
+	}
+	if s.Error != nil {
+		e := *s.Error
+		e.Err = nil // never retain operational cause on cloned public errors
+		out.Error = &e
+	}
+	out.Metadata = CloneMetadata(s.Metadata)
+	return out
+}
+
+// CloneMetadata returns a shallow copy of metadata, or nil when empty.
+func CloneMetadata(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+// CleanupContext returns a bounded context that keeps parent values but not
+// parent cancellation. The caller owns cancel and must call it after Finalize.
+// timeout must be positive.
+func CleanupContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }
 
 func (o Outcome) validate() error {
@@ -965,18 +1038,27 @@ type ContinuationStore interface {
 // persistence seam.
 //
 // Ordering for a configured Lifecycle:
-//  1. Validate request and load continuation history.
+//  1. Validate request, resolve effective store policy, load continuation.
 //  2. Accept — may reserve identity, reject conflicts, or return a Replay.
 //  3. Agent.Run (skipped on Replay) using Accept.Context when Durable.
 //  4. Finalize — exactly once for every accepted execution (success, failure,
-//     or cancellation). Not called for Reject/error from Accept, nor for
-//     Replay responses that were completed in Accept.
+//     or cancellation). Uses Accept.Finalize when set, otherwise the
+//     execution context. Not called for Accept errors or completed Replays.
 //  5. Advertise success to the client only after Finalize succeeds.
 //
-// store:false means do not retain response content for later retrieval or
-// continuation. Finalize still runs so the application can clear execution
-// bookkeeping; Store on TurnResult is false. Applications that cannot honor
+// Durable detaches client disconnect from execution cancellation; it does
+// not create a job system. Production applications must bound execution
+// (Accept.Context) and finalization (Accept.Finalize / CleanupContext).
+//
+// store:false (explicit or effective) means do not retain response content
+// for later retrieval or continuation. Finalize still runs so bookkeeping
+// can clear; ResponseState.Store is false. Applications that cannot honor
 // store:false should reject in Accept.
+//
+// Activity: set Acceptance.Activity to allow EventActivity frames on
+// Responses streams. Emit with ActivityEvent(name, json). Clients consume
+// response.activity.<name>. Keep application-specific response fields
+// outside the standard envelope.
 type Lifecycle interface {
 	// Accept runs after validation and history loading, before Agent.Run and
 	// before any successful streaming headers or events.
@@ -988,35 +1070,30 @@ type Lifecycle interface {
 
 // TurnRequest is the input to Lifecycle.Accept.
 type TurnRequest struct {
-	Request        *Request // Populated Turn and Input; treat as read-only.
+	Request        *Request // Populated Turn, Input, and Retain; treat as read-only.
 	Stream         bool     // Whether the client requested streaming.
 	IdempotencyKey string   // Idempotency-Key header value, if any.
+	Store          *bool    // Wire store value; nil when the field was omitted.
+	Retain         bool     // Effective retention after StoreDefault.
 }
 
 // Acceptance is the per-request result of Lifecycle.Accept.
 type Acceptance struct {
 	ID       string          // Response ID for envelopes; empty uses a library default.
 	Created  int64           // Unix created time; zero uses a library default.
-	Replay   *Replay         // When set, skip Agent.Run and encode this result.
+	Replay   *ResponseState  // When set, skip Agent.Run and encode this result.
 	Durable  bool            // When true, client disconnect does not cancel execution.
-	Context  context.Context // Optional run context when Durable; must outlive the HTTP request.
+	Context  context.Context // Optional bounded run context when Durable.
+	Finalize context.Context // Optional bounded cleanup context for Finalize.
 	Activity bool            // When true, Responses may emit EventActivity frames.
-}
-
-// Replay is a completed result returned from Accept for an idempotent retry.
-type Replay struct {
-	Outcome Outcome // Terminal outcome to encode.
-	Output  []Item  // Persisted output items for this response.
 }
 
 // TurnResult is the input to Lifecycle.Finalize.
 type TurnResult struct {
-	ID      string   // Response ID that was accepted.
-	Created int64    // Creation timestamp used in envelopes.
-	Request *Request // Same request; Turn is the submitted input.
-	Output  []Item   // This turn's assistant output only (not full history).
-	Outcome Outcome  // Terminal outcome after execution.
-	Err     error    // Execution error, if any (including cancellation).
-	Store   bool     // Whether content retention was requested.
-	Stream  bool     // Whether the client requested streaming.
+	ID      string        // Response ID that was accepted.
+	Created int64         // Creation timestamp used in envelopes.
+	Request *Request      // Same request; Turn is the submitted input.
+	State   ResponseState // Client-visible terminal (or cancelled) state.
+	Err     error         // Operational execution error, if any.
+	Stream  bool          // Whether the client requested streaming.
 }

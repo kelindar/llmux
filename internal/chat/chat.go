@@ -669,7 +669,7 @@ func (Adapter) Response(req contract.Request, result execution.Result, meta resp
 }
 
 // Stream returns an SSE encoder for Chat Completions streaming chunks.
-func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta responseMeta, limits contract.Limits) streamEncoder {
+func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta *responseMeta, limits contract.Limits) streamEncoder {
 	return &chatStream{writer: &sseWriter{w: w, limits: limits}, request: req, meta: meta}
 }
 
@@ -770,7 +770,7 @@ func chatAudio(part contract.Part) (map[string]any, error) {
 type chatStream struct {
 	writer      *sseWriter
 	request     contract.Request
-	meta        responseMeta
+	meta        *responseMeta
 	started     bool
 	roleSent    bool
 	toolIndexes map[string]int

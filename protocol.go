@@ -119,6 +119,10 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		Created:  acceptance.Created,
 		Model:    parsed.Request.Target,
 		Activity: acceptance.Activity,
+		State: ResponseState{
+			Metadata: CloneMetadata(parsed.Request.Controls.Metadata),
+			Store:    parsed.Request.Retain,
+		},
 	}
 	if meta.ID == "" {
 		meta.ID = newID(responsePrefix(parsed.Kind))
@@ -152,7 +156,7 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	}
 
 	if acceptance.Replay != nil {
-		h.writeReplay(w, parsed, adapter, meta, *acceptance.Replay)
+		h.writeReplay(w, parsed, adapter, meta, acceptance.Replay.Clone())
 		return
 	}
 	if !accepted {
@@ -183,6 +187,8 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (Acceptance
 		Request:        &parsed.Request,
 		Stream:         parsed.Stream,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		Store:          parsed.Request.Controls.Store,
+		Retain:         parsed.Request.Retain,
 	})
 	if err != nil {
 		return Acceptance{}, true, err
@@ -190,10 +196,14 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (Acceptance
 	return accepted, true, nil
 }
 
-func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, replay Replay) {
-	result := execution.Result{Items: cloneItems(replay.Output), Outcome: replay.Outcome}
+func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state ResponseState) {
+	meta.State = state
+	result := execution.Result{
+		Items:   cloneItems(state.Output),
+		Outcome: outcomeFromState(state),
+	}
 	if parsed.Stream {
-		stream := adapter.Stream(w, parsed.Request, meta, h.limits)
+		stream := adapter.Stream(w, parsed.Request, &meta, h.limits)
 		for _, item := range result.Items {
 			if err := stream.Event(OutputItem(item)); err != nil {
 				h.logError(context.Background(), err)
@@ -234,7 +244,7 @@ func (h *Handler) serveStream(
 	runCtx context.Context,
 	validateEvent func(Event) error,
 ) {
-	stream := adapter.Stream(w, parsed.Request, meta, h.limits)
+	stream := adapter.Stream(w, parsed.Request, &meta, h.limits)
 	delivering := true
 	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event Event) error {
 		if err := validateEvent(event); err != nil {
@@ -244,8 +254,6 @@ func (h *Handler) serveStream(
 			return nil
 		}
 		if err := stream.Event(event); err != nil {
-			// Durable mode stops delivery on transport failure only; invalid
-			// events and encoding errors still fail the agent.
 			if acceptance.Durable && IsDelivery(err) {
 				delivering = false
 				return nil
@@ -255,7 +263,9 @@ func (h *Handler) serveStream(
 		return nil
 	})
 
-	finalErr := h.finalizeTurn(runCtx, parsed, meta, acceptance, result, runErr)
+	state := buildResponseState(&parsed.Request, meta, result, runErr)
+	meta.State = state
+	finalErr := h.finalizeTurn(runCtx, acceptance, parsed, meta, state, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		if delivering && stream.Started() {
@@ -277,7 +287,7 @@ func (h *Handler) serveStream(
 	if !delivering {
 		return
 	}
-	if err := stream.Complete(result.Outcome, result.Items); err != nil {
+	if err := stream.Complete(outcomeFromState(state), state.Output); err != nil {
 		h.logError(r.Context(), err)
 		if stream.Started() {
 			_ = stream.Fail(err)
@@ -301,7 +311,9 @@ func (h *Handler) serveOrdinary(
 	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event Event) error {
 		return validateEvent(event)
 	})
-	finalErr := h.finalizeTurn(runCtx, parsed, meta, acceptance, result, runErr)
+	state := buildResponseState(&parsed.Request, meta, result, runErr)
+	meta.State = state
+	finalErr := h.finalizeTurn(runCtx, acceptance, parsed, meta, state, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		writeProtocolError(w, parsed.Kind, runErr)
@@ -312,7 +324,7 @@ func (h *Handler) serveOrdinary(
 		writeProtocolError(w, parsed.Kind, finalErr)
 		return
 	}
-	body, err := adapter.Response(parsed.Request, result, meta)
+	body, err := adapter.Response(parsed.Request, execution.Result{Items: state.Output, Outcome: outcomeFromState(state)}, meta)
 	if err != nil {
 		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
@@ -322,27 +334,96 @@ func (h *Handler) serveOrdinary(
 }
 
 func (h *Handler) finalizeTurn(
-	ctx context.Context,
+	runCtx context.Context,
+	acceptance Acceptance,
 	parsed parsedRequest,
 	meta responseMeta,
-	acceptance Acceptance,
-	result execution.Result,
+	state ResponseState,
 	runErr error,
 ) error {
 	if h.lifecycle == nil {
 		return nil
 	}
-	store := parsed.Request.Controls.Store != nil && *parsed.Request.Controls.Store
+	ctx := runCtx
+	if acceptance.Finalize != nil {
+		ctx = acceptance.Finalize
+	}
 	return h.lifecycle.Finalize(ctx, &TurnResult{
 		ID:      meta.ID,
 		Created: meta.Created,
 		Request: &parsed.Request,
-		Output:  cloneItems(result.Items),
-		Outcome: result.Outcome,
+		State:   state,
 		Err:     runErr,
-		Store:   store,
 		Stream:  parsed.Stream,
 	})
+}
+
+func buildResponseState(req *Request, meta responseMeta, result execution.Result, runErr error) ResponseState {
+	state := ResponseState{
+		Output:      cloneItems(result.Items),
+		Usage:       result.Outcome.Usage,
+		Metadata:    CloneMetadata(meta.State.Metadata),
+		Store:       req.Retain,
+		CompletedAt: unixNow(),
+	}
+	if len(state.Metadata) == 0 {
+		state.Metadata = CloneMetadata(req.Controls.Metadata)
+	}
+	switch {
+	case runErr != nil:
+		state.Status = StatusFailed
+		if result.Outcome.Status == StatusCancelled {
+			state.Status = StatusCancelled
+		}
+		state.Error = publicAPIError(runErr)
+	case result.Outcome.Status != "":
+		state.Status = result.Outcome.Status
+	default:
+		state.Status = StatusCompleted
+	}
+	if state.Status == StatusIncomplete {
+		state.Incomplete = incompleteReason(result.Outcome.StopReason)
+	}
+	if state.Status == StatusInProgress {
+		state.CompletedAt = 0
+	}
+	return state
+}
+
+func publicAPIError(err error) *APIError {
+	api := asAPIError(err)
+	if api == nil {
+		return nil
+	}
+	copy := *api
+	copy.Err = nil
+	return &copy
+}
+
+func incompleteReason(reason StopReason) string {
+	switch reason {
+	case StopLength:
+		return "max_output_tokens"
+	case "":
+		return "incomplete"
+	default:
+		return string(reason)
+	}
+}
+
+func outcomeFromState(state ResponseState) Outcome {
+	outcome := Outcome{Status: state.Status, Usage: state.Usage}
+	switch state.Status {
+	case StatusFailed:
+		outcome.StopReason = StopError
+	case StatusCancelled:
+		outcome.StopReason = StopCancelled
+	case StatusIncomplete:
+		if state.Incomplete == "max_output_tokens" {
+			outcome.StopReason = StopLength
+		}
+	}
+	return outcome
 }
 
 func responsePrefix(p protocol) string {

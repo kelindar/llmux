@@ -310,7 +310,7 @@ func TestAdapterStream(t *testing.T) {
 
 	t.Run("textDelta", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, req, meta, limits)
+		stream := adapter.Stream(rec, req, &meta, limits)
 		assert.False(t, stream.Started())
 		item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("hello"))
 		item.ID = "msg_1"
@@ -325,7 +325,7 @@ func TestAdapterStream(t *testing.T) {
 
 	t.Run("toolCallFlow", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, req, meta, limits)
+		stream := adapter.Stream(rec, req, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallDelta, ItemID: "fc_1", CallID: "call_1", Delta: `{"q"`}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCall, ItemID: "fc_1", CallID: "call_1", Name: "search", Arguments: `{"q":"x"}`}))
@@ -343,7 +343,7 @@ func TestAdapterStreamFail(t *testing.T) {
 
 	t.Run("beforeStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		err := stream.Fail(contract.Invalid("model", "bad model"))
 		requireAPIError(t, err, "invalid_request", "model")
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -351,7 +351,7 @@ func TestAdapterStreamFail(t *testing.T) {
 
 	t.Run("afterStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("x"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMessage, Item: item}))
@@ -725,7 +725,7 @@ func TestResponseObject(t *testing.T) {
 			ToolChoice:         &contract.ToolChoice{Mode: "function", Name: "search"},
 		},
 	}
-	value := responseObject(req, contract.Outcome{Status: contract.StatusIncomplete}, responseMeta{Model: "gpt-4.1"}, []any{})
+	value := responseObject(req, responseMeta{Model: "gpt-4.1"}, contract.ResponseState{Status: contract.StatusIncomplete}, []any{})
 	assert.Equal(t, false, value["parallel_tool_calls"])
 	assert.Equal(t, "prev", value["previous_response_id"])
 }
@@ -743,7 +743,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("textDeltaDone", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "hel"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "lo"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDone, ItemID: "msg_1", Text: "hello"}))
@@ -755,7 +755,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("reasoningStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.Item{Type: contract.ItemReasoning, Summary: []contract.Part{contract.SummaryPart("thinking")}}
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventReasoning, Item: item}))
 		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, []contract.Item{item}))
@@ -764,7 +764,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("toolCallDonePath", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallDelta, ItemID: "fc_1", CallID: "call_1", Delta: `{"q":"x"}`}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallDone, ItemID: "fc_1", CallID: "call_1", Arguments: `{"q":"x"}`}))
@@ -775,7 +775,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("textDoneUnknown", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "x"}))
 		err := stream.Event(contract.Event{Type: contract.EventTextDone, ItemID: "missing"})
 		require.Error(t, err)
@@ -783,14 +783,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("outputItemPaths", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.OutputItem(contract.FunctionCallItem("call_1", "search", `{}`))))
 		require.NoError(t, stream.Event(contract.OutputItem(contract.MessageItem(contract.RoleAssistant, contract.TextPart("via item")))))
 	})
 
 	t.Run("imageStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		part := contract.ImagePart(contract.InlineMedia("image/png", []byte{1, 2}))
 		require.NoError(t, stream.Event(contract.MediaOutput(part)))
 		mediaItem := contract.Item{Type: contract.ItemMedia, ID: "img_1", Content: []contract.Part{part}}
@@ -800,7 +800,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("emptyMessage", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.MessageItem(contract.RoleAssistant)
 		item.ID = "msg_empty"
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMessage, Item: item}))
@@ -809,14 +809,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("unsupportedEvent", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		err := stream.Event(contract.Event{Type: "nope"})
 		require.Error(t, err)
 	})
 
 	t.Run("reasoningOpaqueData", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.Item{Type: contract.ItemReasoning, Data: jsontext.Value(`{"x":1}`)}
 		err := stream.Event(contract.Event{Type: contract.EventReasoning, Item: item})
 		requireAPIError(t, err, "unsupported", "output")
@@ -824,7 +824,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("completeDirect", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("done"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2}}, []contract.Item{item}))
@@ -833,7 +833,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("audioRejected", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		audio := contract.InlineMedia("audio/wav", []byte{1})
 		err := stream.Event(contract.Event{Type: contract.EventMedia, Part: contract.AudioPart(audio)})
 		requireAPIError(t, err, "unsupported", "output")
@@ -841,7 +841,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("textDoneImplicit", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "hel"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "lo"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDone, ItemID: "msg_1"}))
@@ -853,7 +853,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("reasoningEncrypted", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.Item{Type: contract.ItemReasoning, ID: "rs_1", Summary: []contract.Part{contract.SummaryPart("think")}, EncryptedContent: jsontext.Value(`"enc"`)}
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventReasoning, Item: item}))
 		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, []contract.Item{item}))
@@ -862,14 +862,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("duplicateToolStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 	})
 
 	t.Run("completeMixedItems", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		msg := contract.MessageItem(contract.RoleAssistant, contract.TextPart("hi"))
 		msg.ID = "msg_1"
 		call := contract.FunctionCallItem("call_1", "search", `{}`)
@@ -880,7 +880,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("multiPartMessage", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("a"), contract.TextPart("b"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMessage, Item: item}))
@@ -890,7 +890,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("toolCallDoneLookup", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallDelta, ItemID: "fc_1", CallID: "call_1", Delta: `{"q":"x"}`}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCallDone, ItemID: "fc_1", CallID: "call_1", Arguments: `{"q":"x"}`}))
@@ -898,7 +898,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("duplicateMessageAdd", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("once"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMessage, Item: item}))
@@ -907,14 +907,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("unsupportedOutputItem", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		err := stream.Event(contract.OutputItem(contract.Item{Type: contract.ItemFunctionCallOutput}))
 		requireAPIError(t, err, "unsupported", "output")
 	})
 
 	t.Run("completeBadItem", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		bad := contract.Item{Type: contract.ItemReasoning, Data: jsontext.Value(`{"x":1}`)}
 		err := stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, []contract.Item{bad})
 		requireAPIError(t, err, "unsupported", "output")
@@ -922,7 +922,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("reasoningNoSummary", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.Item{Type: contract.ItemReasoning, ID: "rs_1"}
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventReasoning, Item: item}))
 		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, []contract.Item{item}))
@@ -930,7 +930,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("mediaOutputEvent", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		part := contract.ImagePart(contract.InlineMedia("image/png", []byte{9}))
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMedia, ItemID: "img_1", Part: part}))
 	})
@@ -966,7 +966,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("startedFlag", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		assert.False(t, stream.Started())
 		require.NoError(t, stream.Complete(contract.Outcome{}, []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.TextPart("hi"))}))
 		assert.True(t, stream.Started())
@@ -975,28 +975,28 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("oneShotToolCall", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCall, ItemID: "fc_1", CallID: "call_1", Name: "search", Arguments: `{"q":"x"}`}))
 		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
 	})
 
 	t.Run("unknownToolDelta", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		err := stream.Event(contract.Event{Type: contract.EventToolCallDelta, ItemID: "missing", CallID: "c", Delta: `{}`})
 		require.Error(t, err)
 	})
 
 	t.Run("unknownToolDone", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		err := stream.Event(contract.Event{Type: contract.EventToolCallDone, ItemID: "missing", CallID: "c", Arguments: `{}`})
 		require.Error(t, err)
 	})
 
 	t.Run("messageNonTextStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		item := contract.MessageItem(contract.RoleAssistant, contract.ImagePart(contract.InlineMedia("image/png", []byte{1})))
 		item.ID = "msg_1"
 		err := stream.Event(contract.Event{Type: contract.EventMessage, Item: item})
@@ -1047,7 +1047,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("failAfterStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "x"}))
 		require.NoError(t, stream.Fail(errors.New("boom")))
 		assert.Contains(t, rec.Body.String(), "response.failed")
@@ -1055,7 +1055,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("noFlusher", func(t *testing.T) {
 		w := &plainResponseWriter{header: make(http.Header)}
-		stream := adapter.Stream(w, contract.Request{}, meta, limits)
+		stream := adapter.Stream(w, contract.Request{}, &meta, limits)
 		err := stream.Event(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "x"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "Flusher")
@@ -1063,14 +1063,14 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("emptyToolCallArgs", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(contract.Event{Type: contract.EventToolCall, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
 	})
 
 	t.Run("imageMediaBad", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
 		err := stream.Event(contract.OutputItem(contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.ImagePart(contract.RemoteMedia("image/png", "https://example.com/a.png"))}}))
 		requireAPIError(t, err, "unsupported", "output")
 	})
@@ -1079,7 +1079,7 @@ func TestCoverageMore(t *testing.T) {
 		value, err := adapter.Response(contract.Request{Target: "gpt-4.1"}, execution.Result{
 			Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.TextPart("hi"))},
 			Outcome: contract.Outcome{},
-		}, meta)
+		}, responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"})
 		require.NoError(t, err)
 		assert.Equal(t, "completed", value.(map[string]any)["status"])
 	})

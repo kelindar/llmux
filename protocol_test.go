@@ -136,18 +136,19 @@ func (l *testLifecycle) Finalize(_ context.Context, result *TurnResult) error {
 		req := *result.Request
 		clone.Request = &req
 	}
+	clone.State = result.State.Clone()
 	l.last = &clone
 	if l.fail {
 		return errors.New("finalize failed")
 	}
-	if !result.Store || l.store == nil {
+	if !result.State.Store || l.store == nil {
 		return nil
 	}
-	items := make([]Item, 0, len(result.Request.Input)+len(result.Output))
+	items := make([]Item, 0, len(result.Request.Input)+len(result.State.Output))
 	for _, item := range result.Request.Input {
 		items = append(items, item.Clone())
 	}
-	for _, item := range result.Output {
+	for _, item := range result.State.Output {
 		items = append(items, item.Clone())
 	}
 	l.store.put(result.ID, items)
@@ -170,7 +171,7 @@ func TestContinuation(t *testing.T) {
 	require.Equal(t, 1, life.finals)
 	require.NotNil(t, life.last)
 	assert.Len(t, life.last.Request.Turn, 1)
-	assert.Len(t, life.last.Output, 1)
+	assert.Len(t, life.last.State.Output, 1)
 
 	second := postJSON(t, handler, "/v1/responses", `{"model":"agent/basic","previous_response_id":"`+responseID+`","input":"second"}`, nil)
 	require.Equal(t, http.StatusOK, second.Code)

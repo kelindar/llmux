@@ -114,33 +114,49 @@ type Lifecycle interface {
 
 Ordering when a Lifecycle is configured:
 
-1. Validate the request and load continuation history.
-2. `Accept` — reserve identity, reject conflicts, or return an idempotent `Replay`.
-3. `Agent.Run` (skipped on Replay). With `Acceptance.Durable`, disconnect does
-   not cancel execution; use `Acceptance.Context` or the derived non-cancel
-   context.
-4. `Finalize` — exactly once for every accepted execution (success, failure,
-   or cancellation). Not called for Accept errors or completed Replays.
+1. Validate the request, resolve effective store policy, load continuation.
+2. `Accept` — reserve identity, reject conflicts, or return an idempotent
+   `*ResponseState` replay.
+3. `Agent.Run` (skipped on replay). `Acceptance.Durable` detaches client
+   disconnect from cancellation; supply a bounded `Acceptance.Context` for
+   production. Durable is not a job system.
+4. `Finalize` — exactly once for every accepted execution. Uses
+   `Acceptance.Finalize` when set (see `CleanupContext`), otherwise the
+   execution context. Not called for Accept errors or completed replays.
 5. Advertise successful completion only after Finalize succeeds.
 
+`ResponseState` is the shared client-visible payload for creation,
+finalization, replay, and `ResponsesBody` retrieval: status, output, usage,
+sanitized public error, incomplete reason, completion timestamp, metadata,
+and effective store. Identity (`id`, `created_at`) stays separate and
+application-controlled. Operational Go errors remain on `TurnResult.Err` and
+are never copied into public error text automatically.
+
 Without a Lifecycle, llmux keeps generating response IDs and timestamps
-internally. `store:true` requires a Lifecycle. `store:false` means do not
-retain content for retrieval or continuation; Finalize still runs with
-`Store: false` so bookkeeping can clear. Applications that cannot honor
-`store:false` should reject in Accept.
+internally. Effective retention (`Request.Retain`) requires a Lifecycle.
+`WithStoreDefault` sets the policy when `store` is omitted (default false).
+Explicit `store:true` / `store:false` always win. Applications that cannot
+honor `store:false` should reject in Accept.
 
-`Request.Turn` is the input submitted in this HTTP request. `Request.Input` is
-the effective conversation for the agent (loaded history followed by Turn).
-Finalize receives turn-local output so an application can store a parent
-reference plus this turn's input/output instead of rewriting full history.
+`Request.Turn` is this request's input. `Request.Input` is the effective
+conversation for the agent. Persist `Turn` plus `ResponseState.Output` with a
+parent reference — do not rewrite full history each turn.
 
-Mount the handler under an application prefix (`/api/v1/responses` works).
-Use `ResponsesBody` for application-owned GET retrieval so creation, replay,
-and retrieval share one envelope encoder.
+Metadata from the accepted request is cloned into `ResponseState` and reused
+for replay/retrieval; a retry's metadata does not replace the original.
 
-Enable Responses-only activity frames with `Acceptance.Activity` and
-`ActivityEvent`; they are disabled by default, never become assistant output,
-and are not translated to Chat or Anthropic.
+Mount under an application prefix (`/api/v1/responses` works). Use
+`ResponsesBody` for GET retrieval so creation, replay, and retrieval share one
+encoder.
+
+### Activity events
+
+Enable per request with `Acceptance.Activity` after inspecting application
+headers or extensions. Emit with `ActivityEvent(name, json)` — Responses
+streams `response.activity.<name>` with a bounded JSON payload. Activity is
+never assistant output or continuation history, and is not translated to Chat
+or Anthropic. Keep application-specific response fields outside the standard
+envelope rather than mutating protocol objects.
 
 See [`examples/lifecycle`](examples/lifecycle) for an in-memory Accept /
 continuation / idempotency / retrieval sketch.

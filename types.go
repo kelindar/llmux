@@ -3,7 +3,9 @@
 package llmux
 
 import (
+	"context"
 	"encoding/json/jsontext"
+	"time"
 
 	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/contract"
@@ -120,11 +122,23 @@ type TurnRequest = contract.TurnRequest
 // Acceptance is the per-request result of Lifecycle.Accept.
 type Acceptance = contract.Acceptance
 
-// Replay is a completed result returned from Accept for an idempotent retry.
-type Replay = contract.Replay
+// ResponseState is the client-visible response payload for creation, replay,
+// finalization, and retrieval.
+type ResponseState = contract.ResponseState
 
 // TurnResult is the input to Lifecycle.Finalize.
 type TurnResult = contract.TurnResult
+
+// CleanupContext returns a bounded finalization context that keeps parent
+// values but not parent cancellation.
+func CleanupContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return contract.CleanupContext(parent, timeout)
+}
+
+// CloneMetadata returns a shallow copy of metadata.
+func CloneMetadata(src map[string]string) map[string]string {
+	return contract.CloneMetadata(src)
+}
 
 // Transcriber is the optional service behind POST /v1/audio/transcriptions.
 type Transcriber = audio.Transcriber

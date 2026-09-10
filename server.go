@@ -30,6 +30,7 @@ type Handler struct {
 	assets       AssetResolver
 	continuation ContinuationStore
 	lifecycle    Lifecycle
+	storeDefault bool
 	transcriber  Transcriber
 	speaker      Speaker
 	errorLog     func(context.Context, error)
@@ -76,6 +77,14 @@ func WithContinuationStore(store ContinuationStore) Option {
 // acceptance, and terminal persistence.
 func WithLifecycle(life Lifecycle) Option {
 	return func(h *Handler) { h.lifecycle = life }
+}
+
+// WithStoreDefault sets the content-retention policy when the request omits
+// store. The zero option default is false (current behavior). Explicit
+// store:true or store:false always overrides this default. Effective
+// retention (Retain) requires a configured Lifecycle.
+func WithStoreDefault(retain bool) Option {
+	return func(h *Handler) { h.storeDefault = retain }
 }
 
 // WithTranscriber enables POST /v1/audio/transcriptions.
@@ -295,7 +304,8 @@ func (h *Handler) prepareRequest(ctx context.Context, req *Request) error {
 		input = append(input, cloneItems(req.Turn)...)
 		req.Input = input
 	}
-	if req.Controls.Store != nil && *req.Controls.Store && h.lifecycle == nil {
+	h.applyStorePolicy(req)
+	if req.Retain && h.lifecycle == nil {
 		return Unsupported("store", "response persistence requires a Lifecycle")
 	}
 	if h.assets == nil {
@@ -308,6 +318,17 @@ func (h *Handler) prepareRequest(ctx context.Context, req *Request) error {
 		}
 	}
 	return nil
+}
+
+// applyStorePolicy sets Request.Retain from the wire store field and the
+// configured default without mutating Controls.Store.
+func (h *Handler) applyStorePolicy(req *Request) {
+	switch {
+	case req.Controls.Store != nil:
+		req.Retain = *req.Controls.Store
+	default:
+		req.Retain = h.storeDefault
+	}
 }
 
 func (h *Handler) resolveItemMedia(ctx context.Context, item *Item, count *int) error {

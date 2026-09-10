@@ -8,8 +8,12 @@ import (
 
 // ResponsesBody builds the same Responses JSON envelope used for creation,
 // idempotent replay, and application-owned GET retrieval.
-func ResponsesBody(req Request, outcome Outcome, items []Item, id string, created int64) (any, error) {
-	return responses.Render(req, outcome, items, id, created)
+//
+// id and created are application-controlled identity fields. state carries
+// status, output, usage, public error, incomplete reason, completion time,
+// metadata, and effective store policy.
+func ResponsesBody(req Request, state ResponseState, id string, created int64) (any, error) {
+	return responses.Render(req, state, id, created)
 }
 
 // IsDelivery reports whether err is or wraps ErrDelivery.

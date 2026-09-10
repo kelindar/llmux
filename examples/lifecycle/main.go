@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/kelindar/llmux"
 )
@@ -30,7 +31,11 @@ func main() {
 	})
 
 	mux := http.NewServeMux()
-	handler := llmux.New(resolver, llmux.WithLifecycle(store), llmux.WithContinuationStore(store))
+	handler := llmux.New(resolver,
+		llmux.WithLifecycle(store),
+		llmux.WithContinuationStore(store),
+		llmux.WithStoreDefault(true),
+	)
 	mux.Handle("/api/", handler)
 	mux.HandleFunc("GET /api/v1/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		rec, ok := store.get(r.PathValue("id"))
@@ -38,7 +43,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		body, err := llmux.ResponsesBody(*rec.Request, rec.Outcome, rec.Output, rec.ID, rec.Created)
+		body, err := llmux.ResponsesBody(*rec.Request, rec.State, rec.ID, rec.Created)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -58,9 +63,8 @@ type turnRecord struct {
 	Created int64
 	Parent  string
 	Turn    []llmux.Item
-	Output  []llmux.Item
-	Outcome llmux.Outcome
 	Request *llmux.Request
+	State   llmux.ResponseState
 }
 
 type store struct {
@@ -103,12 +107,12 @@ func (s *store) Load(_ context.Context, id string) ([]llmux.Item, error) {
 	var items []llmux.Item
 	for _, c := range slices.Backward(chain) {
 		items = append(items, cloneItems(c.Turn)...)
-		items = append(items, cloneItems(c.Output)...)
+		items = append(items, cloneItems(c.State.Output)...)
 	}
 	return items, nil
 }
 
-func (s *store) Accept(_ context.Context, turn *llmux.TurnRequest) (llmux.Acceptance, error) {
+func (s *store) Accept(ctx context.Context, turn *llmux.TurnRequest) (llmux.Acceptance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := turn.IdempotencyKey
@@ -123,23 +127,35 @@ func (s *store) Accept(_ context.Context, turn *llmux.TurnRequest) (llmux.Accept
 		}
 		if id, ok := s.byKey[key]; ok {
 			rec := s.byID[id]
+			state := rec.State.Clone()
 			return llmux.Acceptance{
 				ID:      rec.ID,
 				Created: rec.Created,
-				Replay:  &llmux.Replay{Outcome: rec.Outcome, Output: cloneItems(rec.Output)},
+				Replay:  &state,
 			}, nil
 		}
 		s.running[key] = true
 	}
-	if turn.Request.Controls.Store != nil && !*turn.Request.Controls.Store {
+	if turn.Store != nil && !*turn.Store {
 		return llmux.Acceptance{}, llmux.Unsupported("store", "example requires store")
 	}
+	if !turn.Retain {
+		return llmux.Acceptance{}, llmux.Unsupported("store", "example requires store")
+	}
+
 	n := s.seq.Add(1)
 	id := "resp_" + strconv.FormatInt(n, 10)
+	acc := llmux.Acceptance{ID: id, Created: n}
 	if key != "" {
 		s.pending[id] = key
 	}
-	return llmux.Acceptance{ID: id, Created: n}, nil
+	if turn.Request.Controls.Extensions["x-durable"] != nil {
+		acc.Durable = true
+		acc.Context = context.WithoutCancel(ctx)
+		cleanupCtx, _ := llmux.CleanupContext(ctx, time.Second)
+		acc.Finalize = cleanupCtx
+	}
+	return acc, nil
 }
 
 func (s *store) Finalize(_ context.Context, result *llmux.TurnResult) error {
@@ -150,7 +166,7 @@ func (s *store) Finalize(_ context.Context, result *llmux.TurnResult) error {
 	if key != "" {
 		delete(s.running, key)
 	}
-	if result.Err != nil || !result.Store {
+	if !result.State.Store {
 		return nil
 	}
 	parent := ""
@@ -162,9 +178,8 @@ func (s *store) Finalize(_ context.Context, result *llmux.TurnResult) error {
 		Created: result.Created,
 		Parent:  parent,
 		Turn:    cloneItems(result.Request.Turn),
-		Output:  cloneItems(result.Output),
-		Outcome: result.Outcome,
 		Request: result.Request,
+		State:   result.State.Clone(),
 	}
 	s.byID[result.ID] = rec
 	if key != "" {

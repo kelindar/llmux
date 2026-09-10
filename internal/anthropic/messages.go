@@ -665,7 +665,7 @@ func (Adapter) Response(req contract.Request, result execution.Result, meta resp
 }
 
 // Stream returns an SSE encoder for Anthropic Messages streaming events.
-func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta responseMeta, limits contract.Limits) streamEncoder {
+func (Adapter) Stream(w http.ResponseWriter, req contract.Request, meta *responseMeta, limits contract.Limits) streamEncoder {
 	return &anthropicStream{
 		writer:     &sseWriter{w: w, limits: limits},
 		request:    req,
@@ -715,7 +715,7 @@ func anthropicStopReason(outcome contract.Outcome, tools bool) string {
 type anthropicStream struct {
 	writer     *sseWriter
 	request    contract.Request
-	meta       responseMeta
+	meta       *responseMeta
 	started    bool
 	block      int
 	textOpen   bool
