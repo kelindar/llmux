@@ -155,11 +155,11 @@ func boolPointerValue(value *bool) bool { return value != nil && *value }
 
 func responseUsage(usage *chat.Usage) map[string]any {
 	return map[string]any{
-		"input_tokens":          usage.InputTokens,
-		"output_tokens":         usage.OutputTokens,
-		"total_tokens":          usage.TotalTokens,
-		"input_tokens_details":  map[string]any{"cached_tokens": usage.CachedTokens},
-		"output_tokens_details": map[string]any{"reasoning_tokens": usage.ReasoningTokens},
+		"input_tokens":          usage.Input,
+		"output_tokens":         usage.Output,
+		"total_tokens":          usage.Total,
+		"input_tokens_details":  map[string]any{"cached_tokens": usage.Cached},
+		"output_tokens_details": map[string]any{"reasoning_tokens": usage.Reasoning},
 	}
 }
 

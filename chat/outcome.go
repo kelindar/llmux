@@ -1,11 +1,9 @@
 package chat
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"maps"
-	"time"
 )
 
 // StopReason explains why generation ended.
@@ -20,12 +18,14 @@ const (
 )
 
 // Usage reports token accounting for a completed run.
+// Total is supplied independently; callers are not required to set it to
+// Input+Output or any other derived sum.
 type Usage struct {
-	InputTokens     int
-	OutputTokens    int
-	TotalTokens     int
-	CachedTokens    int
-	ReasoningTokens int
+	Input     int
+	Output    int
+	Total     int
+	Cached    int
+	Reasoning int
 }
 
 // Outcome is the final agent result returned from Agent.Run.
@@ -42,7 +42,7 @@ func (o Outcome) Validate() error {
 		return fmt.Errorf("invalid outcome status %q", o.Status)
 	case o.Status == StatusInProgress:
 		return errors.New("outcome status cannot be in_progress")
-	case o.Usage != nil && (o.Usage.InputTokens < 0 || o.Usage.OutputTokens < 0 || o.Usage.TotalTokens < 0 || o.Usage.CachedTokens < 0 || o.Usage.ReasoningTokens < 0):
+	case o.Usage != nil && (o.Usage.Input < 0 || o.Usage.Output < 0 || o.Usage.Total < 0 || o.Usage.Cached < 0 || o.Usage.Reasoning < 0):
 		return errors.New("outcome usage cannot contain negative values")
 	}
 	if o.StopReason != "" {
@@ -100,14 +100,6 @@ func CloneMetadata(src map[string]string) map[string]string {
 		return nil
 	}
 	return maps.Clone(src)
-}
-
-// CleanupContext returns a bounded context that keeps parent values but not parent cancellation.
-func CleanupContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		timeout = time.Second
-	}
-	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }
 
 // APIError is a sanitized protocol error that an application may return from a resolver or agent.

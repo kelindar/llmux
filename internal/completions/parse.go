@@ -99,6 +99,7 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 			return parsedRequest{}, err
 		}
 	}
+	includeUsage := false
 	if raw, ok := object["stream_options"]; ok {
 		streamOptions, err := rawObject(raw, "stream_options")
 		if err != nil {
@@ -107,11 +108,11 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		if err := rejectUnknownStrict(streamOptions, map[string]bool{"include_usage": true}); err != nil {
 			return parsedRequest{}, err
 		}
-		includeUsage, err := decodeBool(streamOptions, "include_usage")
+		value, err := decodeBool(streamOptions, "include_usage")
 		if err != nil {
 			return parsedRequest{}, err
 		}
-		controls.IncludeUsage = includeUsage != nil && *includeUsage
+		includeUsage = value != nil && *value
 	}
 	output := chat.OutputSpec{Modalities: chat.ModalityText}
 	modalitiesProvided := false
@@ -195,7 +196,7 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 	} else if value != nil {
 		stream = *value
 	}
-	return parsedRequest{Kind: protocolChat, Request: chat.Request{Target: target, Input: input, Controls: controls, Output: output, Store: store, Metadata: metadata}, Stream: stream}, nil
+	return parsedRequest{Kind: protocolChat, Request: chat.Request{Target: target, Input: input, Controls: controls, Output: output, Store: store, Metadata: metadata}, Stream: stream, IncludeUsage: includeUsage}, nil
 }
 
 func parseChatMessage(raw jsontext.Value) ([]chat.Item, error) {

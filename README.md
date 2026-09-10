@@ -150,9 +150,11 @@ Ordering when a Lifecycle is configured:
 3. `Agent.Run` (skipped on replay). `Acceptance.Durable` detaches client
    disconnect from cancellation; supply a bounded `Acceptance.Context` for
    production. Durable is not a job system.
-4. `Finalize` — exactly once for every accepted execution. Uses
-   `Acceptance.Finalize` when set (see `CleanupContext`), otherwise the
-   execution context. Not called for Accept errors or completed replays.
+4. `Finalize` — exactly once for every accepted execution, with the
+   execution context. That context may already be cancelled. Finalize owns
+   any detached, bounded cleanup work, for example
+   `context.WithTimeout(context.WithoutCancel(ctx), timeout)`. Not called
+   for Accept errors or completed replays.
 5. Advertise successful completion only after Finalize succeeds.
 
 `ResponseState` is the shared client-visible payload for creation,

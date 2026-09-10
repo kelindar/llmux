@@ -116,6 +116,14 @@ func (s *store) Load(_ context.Context, id string) ([]chat.Item, error) {
 func (s *store) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	switch {
+	case turn.Request.Store != nil && !*turn.Request.Store:
+		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
+	case !turn.Request.Retain:
+		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
+	}
+
 	key := turn.IdempotencyKey
 	if key != "" {
 		if s.running[key] {
@@ -137,12 +145,6 @@ func (s *store) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Accept
 		}
 		s.running[key] = true
 	}
-	switch {
-	case turn.Request.Store != nil && !*turn.Request.Store:
-		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
-	case !turn.Request.Retain:
-		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
-	}
 
 	n := s.seq.Add(1)
 	id := "resp_" + strconv.FormatInt(n, 10)
@@ -153,13 +155,14 @@ func (s *store) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Accept
 	if turn.Request.Controls.Extensions["x-durable"] != nil {
 		acc.Durable = true
 		acc.Context = context.WithoutCancel(ctx)
-		cleanupCtx, _ := chat.CleanupContext(ctx, time.Second)
-		acc.Finalize = cleanupCtx
 	}
 	return acc, nil
 }
 
-func (s *store) Finalize(_ context.Context, result *chat.TurnResult) error {
+func (s *store) Finalize(ctx context.Context, result *chat.TurnResult) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := s.pending[result.ID]
@@ -186,6 +189,7 @@ func (s *store) Finalize(_ context.Context, result *chat.TurnResult) error {
 	if key != "" {
 		s.byKey[key] = result.ID
 	}
+	_ = ctx // keep values available for real persistence work
 	return nil
 }
 

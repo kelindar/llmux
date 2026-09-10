@@ -154,7 +154,6 @@ type Controls struct {
 	Tools            []FunctionTool            // Function tools available to the model.
 	ToolChoice       *ToolChoice               // Tool selection policy.
 	ParallelToolCall *bool                     // Whether parallel tool calls are allowed.
-	IncludeUsage     bool                      // Whether to include token usage in the response.
 	Reasoning        *ReasoningControl         // Reasoning effort and summary controls.
 	Audio            *AudioControls            // Chat Completions audio output controls.
 	ImageGeneration  bool                      // Whether image generation is requested.

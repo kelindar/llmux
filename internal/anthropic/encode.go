@@ -24,7 +24,7 @@ func (Adapter) Response(req chat.Request, result execution.Result, meta response
 		"usage":         nil,
 	}
 	if result.Outcome.Usage != nil {
-		value["usage"] = map[string]any{"input_tokens": result.Outcome.Usage.InputTokens, "output_tokens": result.Outcome.Usage.OutputTokens}
+		value["usage"] = map[string]any{"input_tokens": result.Outcome.Usage.Input, "output_tokens": result.Outcome.Usage.Output}
 	}
 	return value, nil
 }

@@ -35,7 +35,7 @@ func TestChatText(t *testing.T) {
 		calls.Add(1)
 		require.Equal(t, "agent/basic", req.Target)
 		require.Len(t, req.Input, 1)
-		return chat.Outcome{Usage: &chat.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}}, emit(chat.Text("hello"))
+		return chat.Outcome{Usage: &chat.Usage{Input: 3, Output: 2, Total: 5}}, emit(chat.Text("hello"))
 	})
 	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)

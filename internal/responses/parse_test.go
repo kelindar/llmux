@@ -309,7 +309,7 @@ func TestAdapterStream(t *testing.T) {
 
 	t.Run("textDelta", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, req, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{Request: req}, &meta, limits)
 		assert.False(t, stream.Started())
 		item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("hello"))
 		item.ID = "msg_1"
@@ -324,7 +324,7 @@ func TestAdapterStream(t *testing.T) {
 
 	t.Run("toolCallFlow", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, req, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{Request: req}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallDelta, ItemID: "fc_1", CallID: "call_1", Delta: `{"q"`}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallDone, ItemID: "fc_1", CallID: "call_1"}))
@@ -342,7 +342,7 @@ func TestAdapterStreamFail(t *testing.T) {
 
 	t.Run("beforeStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		err := stream.Fail(chat.Invalid("model", "bad model"))
 		requireAPIError(t, err, "invalid_request", "model")
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -350,7 +350,7 @@ func TestAdapterStreamFail(t *testing.T) {
 
 	t.Run("afterStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("x"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
@@ -621,7 +621,7 @@ func TestAdapterResponseMore(t *testing.T) {
 
 	t.Run("reasoningOutput", func(t *testing.T) {
 		item := chat.Item{Type: chat.ItemReasoning, ID: "rs_1", Summary: []chat.Part{chat.SummaryPart("brief")}}
-		result := execution.Result{Items: []chat.Item{item}, Outcome: chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3, CachedTokens: 1, ReasoningTokens: 1}}}
+		result := execution.Result{Items: []chat.Item{item}, Outcome: chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{Input: 1, Output: 2, Total: 3, Cached: 1, Reasoning: 1}}}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
 		data, err := json.Marshal(value)
@@ -740,7 +740,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("textDeltaDone", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "hel"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "lo"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDone, ItemID: "msg_1"}))
@@ -752,7 +752,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("reasoningStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.Item{Type: chat.ItemReasoning, Summary: []chat.Part{chat.SummaryPart("thinking")}}
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
 		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, []chat.Item{item}))
@@ -761,7 +761,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("toolCallDonePath", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallDelta, ItemID: "fc_1", CallID: "call_1", Delta: `{"q":"x"}`}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallDone, ItemID: "fc_1", CallID: "call_1"}))
@@ -772,7 +772,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("textDoneUnknown", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "x"}))
 		err := stream.Event(chat.Event{Type: chat.EventTextDone, ItemID: "missing"})
 		require.Error(t, err)
@@ -780,14 +780,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("outputItemPaths", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.OutputItem(chat.FunctionCallItem("call_1", "search", `{}`))))
 		require.NoError(t, stream.Event(chat.OutputItem(chat.MessageItem(chat.RoleAssistant, chat.TextPart("via item")))))
 	})
 
 	t.Run("imageStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		part := chat.ImagePart(chat.InlineMedia("image/png", []byte{1, 2}))
 		require.NoError(t, stream.Event(chat.MediaItem(part)))
 		mediaItem := chat.Item{Type: chat.ItemMedia, ID: "img_1", Content: []chat.Part{part}}
@@ -797,7 +797,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("emptyMessage", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.MessageItem(chat.RoleAssistant)
 		item.ID = "msg_empty"
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
@@ -806,14 +806,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("unsupportedEvent", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		err := stream.Event(chat.Event{Type: "nope"})
 		require.Error(t, err)
 	})
 
 	t.Run("reasoningOpaqueData", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.Item{Type: chat.ItemReasoning, Data: jsontext.Value(`{"x":1}`)}
 		err := stream.Event(chat.Event{Type: chat.EventItem, Item: item})
 		requireAPIError(t, err, "unsupported", "output")
@@ -821,16 +821,16 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("completeDirect", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("done"))
 		item.ID = "msg_1"
-		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2}}, []chat.Item{item}))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{Input: 1, Output: 2}}, []chat.Item{item}))
 		assert.Contains(t, rec.Body.String(), "response.completed")
 	})
 
 	t.Run("audioRejected", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		audio := chat.InlineMedia("audio/wav", []byte{1})
 		err := stream.Event(chat.MediaItem(chat.AudioPart(audio)))
 		requireAPIError(t, err, "unsupported", "output")
@@ -838,7 +838,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("textDoneImplicit", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "hel"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "lo"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDone, ItemID: "msg_1"}))
@@ -850,7 +850,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("reasoningEncrypted", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.Item{Type: chat.ItemReasoning, ID: "rs_1", Summary: []chat.Part{chat.SummaryPart("think")}, EncryptedContent: jsontext.Value(`"enc"`)}
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
 		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, []chat.Item{item}))
@@ -859,25 +859,25 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("duplicateToolStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 	})
 
 	t.Run("completeMixedItems", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		msg := chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))
 		msg.ID = "msg_1"
 		call := chat.FunctionCallItem("call_1", "search", `{}`)
 		call.ID = "fc_1"
-		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2}}, []chat.Item{msg, call}))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{Input: 1, Output: 2}}, []chat.Item{msg, call}))
 		assert.Contains(t, rec.Body.String(), "response.completed")
 	})
 
 	t.Run("multiPartMessage", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("a"), chat.TextPart("b"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
@@ -887,7 +887,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("toolCallDoneLookup", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallStart, ItemID: "fc_1", CallID: "call_1", Name: "search"}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallDelta, ItemID: "fc_1", CallID: "call_1", Delta: `{"q":"x"}`}))
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventToolCallDone, ItemID: "fc_1", CallID: "call_1"}))
@@ -895,7 +895,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("duplicateMessageAdd", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("once"))
 		item.ID = "msg_1"
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
@@ -904,14 +904,14 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("unsupportedOutputItem", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		err := stream.Event(chat.OutputItem(chat.Item{Type: chat.ItemFunctionCallOutput}))
 		requireAPIError(t, err, "unsupported", "output")
 	})
 
 	t.Run("completeBadItem", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		bad := chat.Item{Type: chat.ItemReasoning, Data: jsontext.Value(`{"x":1}`)}
 		err := stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, []chat.Item{bad})
 		requireAPIError(t, err, "unsupported", "output")
@@ -919,7 +919,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("reasoningNoSummary", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.Item{Type: chat.ItemReasoning, ID: "rs_1"}
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
 		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, []chat.Item{item}))
@@ -927,7 +927,7 @@ func TestAdapterStreamMore(t *testing.T) {
 
 	t.Run("mediaOutputEvent", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		part := chat.ImagePart(chat.InlineMedia("image/png", []byte{9}))
 		require.NoError(t, stream.Event(chat.MediaItem(part)))
 	})
@@ -963,7 +963,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("startedFlag", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		assert.False(t, stream.Started())
 		require.NoError(t, stream.Complete(chat.Outcome{}, []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))}))
 		assert.True(t, stream.Started())
@@ -972,7 +972,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("oneShotToolCall", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.FunctionCallItem("call_1", "search", `{"q":"x"}`)
 		item.ID = "fc_1"
 		require.NoError(t, stream.Event(chat.OutputItem(item)))
@@ -981,21 +981,21 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("unknownToolDelta", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		err := stream.Event(chat.Event{Type: chat.EventToolCallDelta, ItemID: "missing", CallID: "c", Delta: `{}`})
 		require.Error(t, err)
 	})
 
 	t.Run("unknownToolDone", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		err := stream.Event(chat.Event{Type: chat.EventToolCallDone, ItemID: "missing", CallID: "c"})
 		require.Error(t, err)
 	})
 
 	t.Run("messageNonTextStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.MessageItem(chat.RoleAssistant, chat.ImagePart(chat.InlineMedia("image/png", []byte{1})))
 		item.ID = "msg_1"
 		err := stream.Event(chat.Event{Type: chat.EventItem, Item: item})
@@ -1046,7 +1046,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("failAfterStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "x"}))
 		require.NoError(t, stream.Fail(errors.New("boom")))
 		assert.Contains(t, rec.Body.String(), "response.failed")
@@ -1054,7 +1054,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("noFlusher", func(t *testing.T) {
 		w := &plainResponseWriter{header: make(http.Header)}
-		stream := adapter.Stream(w, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(w, parsedRequest{}, &meta, limits)
 		err := stream.Event(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "x"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "Flusher")
@@ -1062,7 +1062,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("emptyToolCallArgs", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		item := chat.FunctionCallItem("call_1", "search", "")
 		item.ID = "fc_1"
 		require.NoError(t, stream.Event(chat.OutputItem(item)))
@@ -1071,7 +1071,7 @@ func TestCoverageMore(t *testing.T) {
 
 	t.Run("imageMediaBad", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		err := stream.Event(chat.OutputItem(chat.Item{Type: chat.ItemMedia, Content: []chat.Part{chat.ImagePart(chat.RemoteMedia("image/png", "https://example.com/a.png"))}}))
 		requireAPIError(t, err, "unsupported", "output")
 	})

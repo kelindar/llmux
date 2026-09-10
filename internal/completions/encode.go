@@ -101,7 +101,7 @@ func chatFinishReason(outcome chat.Outcome, tools bool) string {
 }
 
 func chatUsage(usage *chat.Usage) map[string]any {
-	return map[string]any{"prompt_tokens": usage.InputTokens, "completion_tokens": usage.OutputTokens, "total_tokens": usage.TotalTokens}
+	return map[string]any{"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Total}
 }
 
 func chatAudio(part chat.Part) (map[string]any, error) {

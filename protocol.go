@@ -208,7 +208,7 @@ func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapt
 		Outcome: outcomeFromState(state),
 	}
 	if parsed.Stream {
-		stream := adapter.Stream(w, parsed.Request, &meta, h.limits)
+		stream := adapter.Stream(w, parsed, &meta, h.limits)
 		for _, item := range result.Items {
 			if err := stream.Event(chat.OutputItem(item)); err != nil {
 				h.logError(context.Background(), err)
@@ -249,7 +249,7 @@ func (h *Handler) serveStream(
 	runCtx context.Context,
 	validateEvent func(chat.Event) error,
 ) {
-	stream := adapter.Stream(w, parsed.Request, &meta, h.limits)
+	stream := adapter.Stream(w, parsed, &meta, h.limits)
 	delivering := true
 	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event chat.Event) error {
 		if err := validateEvent(event); err != nil {
@@ -270,7 +270,7 @@ func (h *Handler) serveStream(
 
 	state := buildResponseState(&parsed.Request, meta, result, runErr)
 	meta.State = state
-	finalErr := h.finalizeTurn(runCtx, acceptance, parsed, meta, state, runErr)
+	finalErr := h.finalizeTurn(runCtx, parsed, meta, state, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		if delivering && stream.Started() {
@@ -318,7 +318,7 @@ func (h *Handler) serveOrdinary(
 	})
 	state := buildResponseState(&parsed.Request, meta, result, runErr)
 	meta.State = state
-	finalErr := h.finalizeTurn(runCtx, acceptance, parsed, meta, state, runErr)
+	finalErr := h.finalizeTurn(runCtx, parsed, meta, state, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		writeProtocolError(w, parsed.Kind, runErr)
@@ -340,7 +340,6 @@ func (h *Handler) serveOrdinary(
 
 func (h *Handler) finalizeTurn(
 	runCtx context.Context,
-	acceptance chat.Acceptance,
 	parsed parsedRequest,
 	meta responseMeta,
 	state chat.ResponseState,
@@ -349,11 +348,7 @@ func (h *Handler) finalizeTurn(
 	if h.lifecycle == nil {
 		return nil
 	}
-	ctx := runCtx
-	if acceptance.Finalize != nil {
-		ctx = acceptance.Finalize
-	}
-	return h.lifecycle.Finalize(ctx, &chat.TurnResult{
+	return h.lifecycle.Finalize(runCtx, &chat.TurnResult{
 		ID:      meta.ID,
 		Created: meta.Created,
 		Request: &parsed.Request,

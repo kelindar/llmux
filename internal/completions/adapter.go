@@ -146,6 +146,6 @@ func (Adapter) ValidateEvent(event chat.Event) error {
 }
 
 // Stream returns an SSE encoder for Chat Completions streaming chunks.
-func (Adapter) Stream(w http.ResponseWriter, req chat.Request, meta *responseMeta, limits chat.Limits) streamEncoder {
-	return &chatStream{writer: &sseWriter{w: w, limits: limits}, request: req, meta: meta}
+func (Adapter) Stream(w http.ResponseWriter, parsed parsedRequest, meta *responseMeta, limits chat.Limits) streamEncoder {
+	return &chatStream{writer: &sseWriter{w: w, limits: limits}, request: parsed.Request, meta: meta, includeUsage: parsed.IncludeUsage}
 }

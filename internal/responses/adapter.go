@@ -151,10 +151,10 @@ func (Adapter) ValidateEvent(event chat.Event) error {
 }
 
 // Stream returns an SSE encoder for Responses API streaming events.
-func (Adapter) Stream(w http.ResponseWriter, req chat.Request, meta *responseMeta, limits chat.Limits) streamEncoder {
+func (Adapter) Stream(w http.ResponseWriter, parsed parsedRequest, meta *responseMeta, limits chat.Limits) streamEncoder {
 	return &responsesStream{
 		writer:    &sseWriter{w: w, limits: limits},
-		request:   req,
+		request:   parsed.Request,
 		meta:      meta,
 		indexes:   make(map[string]int),
 		text:      make(map[string]string),

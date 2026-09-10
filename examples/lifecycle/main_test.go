@@ -63,6 +63,38 @@ func TestLifecycleExample(t *testing.T) {
 	assert.Equal(t, id, responseID(t, getRec))
 }
 
+func TestIdempotencyKey(t *testing.T) {
+	store := newStore()
+	calls := 0
+	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		calls++
+		return chat.Outcome{}, emit(chat.Text("ok"))
+	})
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{Continuation: true}, nil
+	})
+	mux := http.NewServeMux()
+	handler := llmux.New(resolver, llmux.WithLifecycle(store), llmux.WithContinuationStore(store), llmux.WithStoreDefault(true))
+	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
+
+	t.Run("reject leaves no reservation", func(t *testing.T) {
+		rejected := post(t, mux, `{"model":"agent/basic","store":false,"input":"no"}`, "same-key")
+		require.Equal(t, http.StatusBadRequest, rejected.Code)
+		assert.Equal(t, 0, calls)
+		store.mu.Lock()
+		assert.False(t, store.running["same-key"])
+		assert.Empty(t, store.pending)
+		store.mu.Unlock()
+	})
+
+	t.Run("same key then accepts", func(t *testing.T) {
+		accepted := post(t, mux, `{"model":"agent/basic","store":true,"input":"yes"}`, "same-key")
+		require.Equal(t, http.StatusOK, accepted.Code)
+		assert.Equal(t, 1, calls)
+		assert.Contains(t, accepted.Body.String(), "ok")
+	})
+}
+
 func post(t *testing.T, h http.Handler, body, key string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/responses", strings.NewReader(body))

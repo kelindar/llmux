@@ -17,8 +17,11 @@ type ContinuationStore interface {
 //  1. Validate request, resolve store policy, load continuation.
 //  2. Accept — reserve identity, reject conflicts, or return Replay.
 //  3. Agent.Run (skipped on Replay); Durable detaches client cancel only.
-//  4. Finalize exactly once for accepted executions (uses Acceptance.Finalize
-//     when set). Not called for Accept errors or completed Replays.
+//  4. Finalize exactly once for accepted executions, with the execution
+//     context. That context may already be cancelled. Finalize owns any
+//     detached, bounded cleanup work (for example
+//     context.WithTimeout(context.WithoutCancel(ctx), timeout)).
+//     Not called for Accept errors or completed Replays.
 //  5. Advertise success only after Finalize succeeds.
 //
 // Activity: set Acceptance.Activity and emit Activity(name, json). Keep
@@ -43,7 +46,6 @@ type Acceptance struct {
 	Replay   *ResponseState  // When set, skip Agent.Run and encode this result.
 	Durable  bool            // Client disconnect does not cancel execution.
 	Context  context.Context // Optional bounded run context when Durable.
-	Finalize context.Context // Optional bounded cleanup context for Finalize.
 	Activity bool            // When true, Responses may emit EventActivity.
 }
 

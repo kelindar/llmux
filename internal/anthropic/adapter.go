@@ -137,10 +137,10 @@ func (Adapter) ValidateEvent(event chat.Event) error {
 }
 
 // Stream returns an SSE encoder for Anthropic Messages streaming events.
-func (Adapter) Stream(w http.ResponseWriter, req chat.Request, meta *responseMeta, limits chat.Limits) streamEncoder {
+func (Adapter) Stream(w http.ResponseWriter, parsed parsedRequest, meta *responseMeta, limits chat.Limits) streamEncoder {
 	return &anthropicStream{
 		writer:     &sseWriter{w: w, limits: limits},
-		request:    req,
+		request:    parsed.Request,
 		meta:       meta,
 		toolBlocks: make(map[string]int),
 		toolNames:  make(map[string]string),

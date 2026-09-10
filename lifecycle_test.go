@@ -67,6 +67,9 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 	m.accepts++
 	key := turn.IdempotencyKey
 	m.lastKey = key
+	if turn.Request.Store != nil && !*turn.Request.Store && !m.allowNoStore {
+		return chat.Acceptance{}, chat.Unsupported("store", "application requires store")
+	}
 	if key != "" {
 		if m.running[key] {
 			return chat.Acceptance{}, &chat.APIError{Status: http.StatusConflict, Type: "invalid_request_error", Code: "request_in_progress", Message: "request already running"}
@@ -76,9 +79,6 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 			return chat.Acceptance{ID: replay.id, Created: replay.created, Replay: &state}, nil
 		}
 		m.running[key] = true
-	}
-	if turn.Request.Store != nil && !*turn.Request.Store && !m.allowNoStore {
-		return chat.Acceptance{}, chat.Unsupported("store", "application requires store")
 	}
 
 	acc := chat.Acceptance{ID: "resp_app", Created: 99}
@@ -91,12 +91,11 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 	}
 	if m.boundCleanup {
 		parentCtx := context.WithValue(ctx, ctxKey{}, "cleanup")
-		runCtx, cancel := context.WithTimeout(parentCtx, 50*time.Millisecond)
+		// Run longer than the cleanup budget so a stale Accept-time timeout
+		// would already have expired before Finalize begins.
+		runCtx, cancel := context.WithTimeout(parentCtx, 150*time.Millisecond)
 		_ = cancel
-		cleanupCtx, cleanupCancel := chat.CleanupContext(parentCtx, time.Second)
-		_ = cleanupCancel
 		acc.Context = runCtx
-		acc.Finalize = cleanupCtx
 		acc.Durable = true
 	}
 	return acc, nil
@@ -104,12 +103,26 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 
 func (m *memoryLife) Finalize(ctx context.Context, result *chat.TurnResult) error {
 	if m.boundCleanup {
-		if ctx.Err() != nil {
-			return errors.New("finalize context cancelled")
-		}
-		if ctx.Value(ctxKey{}) == nil {
+		cleanupTimeout := 50 * time.Millisecond
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		if cleanupCtx.Value(ctxKey{}) == nil {
 			return errors.New("finalize context missing value")
 		}
+		started := time.Now()
+		select {
+		case <-time.After(cleanupTimeout / 2):
+		case <-cleanupCtx.Done():
+			return errors.New("cleanup cancelled too early")
+		}
+		if time.Since(started) < cleanupTimeout/3 {
+			return errors.New("cleanup budget not refreshed at finalization")
+		}
+		<-cleanupCtx.Done()
+		if !errors.Is(cleanupCtx.Err(), context.DeadlineExceeded) {
+			return errors.New("cleanup cancellation missing")
+		}
+		ctx = cleanupCtx
 	}
 	if ctx.Value(ctxKey{}) != nil {
 		m.ctxSeen.Store(true)
@@ -185,7 +198,7 @@ func TestLifecycle(t *testing.T) {
 		var calls atomic.Int32
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
-			return chat.Outcome{Usage: &chat.Usage{TotalTokens: 3}}, emit(chat.Text("once"))
+			return chat.Outcome{Usage: &chat.Usage{Total: 3}}, emit(chat.Text("once"))
 		}), chat.Capabilities{Continuation: true}, WithLifecycle(life), WithContinuationStore(life))
 		headers := map[string]string{"Idempotency-Key": "k1"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)

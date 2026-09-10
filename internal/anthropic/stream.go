@@ -155,8 +155,8 @@ func (s *anthropicStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 	stop := anthropicStopReason(outcome, s.hadTool || hasFunctionCall(items))
 	usage := map[string]any{}
 	if outcome.Usage != nil {
-		usage["input_tokens"] = outcome.Usage.InputTokens
-		usage["output_tokens"] = outcome.Usage.OutputTokens
+		usage["input_tokens"] = outcome.Usage.Input
+		usage["output_tokens"] = outcome.Usage.Output
 	}
 	if err := s.emit("message_delta", map[string]any{"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": usage}); err != nil {
 		return err

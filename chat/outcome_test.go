@@ -20,7 +20,7 @@ func TestOutcomeValidate(t *testing.T) {
 		"usageOk": {
 			outcome: Outcome{
 				Status: StatusCompleted,
-				Usage:  &Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+				Usage:  &Usage{Input: 1, Output: 2, Total: 3},
 			},
 		},
 		"invalidStatus": {
@@ -32,7 +32,7 @@ func TestOutcomeValidate(t *testing.T) {
 			wantErr: "cannot be in_progress",
 		},
 		"negativeUsage": {
-			outcome: Outcome{Status: StatusCompleted, Usage: &Usage{InputTokens: -1}},
+			outcome: Outcome{Status: StatusCompleted, Usage: &Usage{Input: -1}},
 			wantErr: "negative values",
 		},
 		"invalidStopReason": {

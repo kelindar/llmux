@@ -10,14 +10,15 @@ import (
 )
 
 type chatStream struct {
-	writer      *sseWriter
-	request     chat.Request
-	meta        *responseMeta
-	started     bool
-	roleSent    bool
-	toolIndexes map[string]int
-	nextTool    int
-	hadTool     bool
+	writer       *sseWriter
+	request      chat.Request
+	meta         *responseMeta
+	includeUsage bool
+	started      bool
+	roleSent     bool
+	toolIndexes  map[string]int
+	nextTool     int
+	hadTool      bool
 }
 
 // Started reports whether the Chat Completions SSE stream has begun.
@@ -32,7 +33,7 @@ func (s *chatStream) Event(event chat.Event) error {
 		return nil
 	}
 	chunk := map[string]any{"id": s.meta.ID, "object": "chat.completion.chunk", "created": s.meta.Created, "model": s.meta.Model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}}
-	if s.request.Controls.IncludeUsage {
+	if s.includeUsage {
 		chunk["usage"] = nil
 	}
 	delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
@@ -142,13 +143,13 @@ func (s *chatStream) Event(event chat.Event) error {
 func (s *chatStream) Complete(outcome chat.Outcome, items []chat.Item) error {
 	finish := chatFinishReason(outcome, s.hadTool)
 	chunk := map[string]any{"id": s.meta.ID, "object": "chat.completion.chunk", "created": s.meta.Created, "model": s.meta.Model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}}
-	if s.request.Controls.IncludeUsage {
+	if s.includeUsage {
 		chunk["usage"] = nil
 	}
 	if err := s.writer.write("", chunk); err != nil {
 		return err
 	}
-	if outcome.Usage != nil && s.request.Controls.IncludeUsage {
+	if outcome.Usage != nil && s.includeUsage {
 		usageChunk := map[string]any{"id": s.meta.ID, "object": "chat.completion.chunk", "created": s.meta.Created, "model": s.meta.Model, "choices": []any{}, "usage": chatUsage(outcome.Usage)}
 		if err := s.writer.write("", usageChunk); err != nil {
 			return err

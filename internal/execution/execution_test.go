@@ -34,7 +34,7 @@ func TestRun(t *testing.T) {
 			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, Delta: "hel"}))
 				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, Delta: "lo"}))
-				return chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil
+				return chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{Input: 1, Output: 2, Total: 3}}, nil
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)

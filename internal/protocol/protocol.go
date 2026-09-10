@@ -24,9 +24,10 @@ const (
 
 // ParsedRequest is the protocol-neutral request produced by a wire decoder.
 type ParsedRequest struct {
-	Kind    Kind         // wire protocol that parsed the request
-	Request chat.Request // canonical request payload
-	Stream  bool         // whether the client requested streaming
+	Kind         Kind         // wire protocol that parsed the request
+	Request      chat.Request // canonical request payload
+	Stream       bool         // whether the client requested streaming
+	IncludeUsage bool         // Chat Completions stream_options.include_usage only
 }
 
 // Meta contains response identity shared by all protocol encoders.
@@ -59,7 +60,7 @@ type Adapter interface {
 	// Stream returns an SSE encoder for the given response writer.
 	// meta is retained for the stream lifetime so terminal ResponseState
 	// updates are visible to Complete.
-	Stream(http.ResponseWriter, chat.Request, *Meta, chat.Limits) StreamEncoder
+	Stream(http.ResponseWriter, ParsedRequest, *Meta, chat.Limits) StreamEncoder
 }
 
 // SSEWriter owns the shared HTTP/SSE mechanics. Protocol codecs only provide
