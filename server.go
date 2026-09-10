@@ -277,10 +277,10 @@ func (h *Handler) prepareRequest(ctx context.Context, req *chat.Request) error {
 		req.Input = input
 	}
 	h.applyStorePolicy(req)
-	if req.Retain && h.lifecycle == nil {
+	switch {
+	case req.Retain && h.lifecycle == nil:
 		return chat.Unsupported("store", "response persistence requires a Lifecycle")
-	}
-	if h.assets == nil {
+	case h.assets == nil:
 		return nil
 	}
 	count := 0
@@ -361,19 +361,13 @@ func (h *Handler) validateRequest(req *chat.Request, caps chat.Capabilities) err
 				return chat.Invalid("input", "too many media assets")
 			}
 		}
-		switch part.Type {
-		case chat.PartImage:
-			if !caps.InputModalities.Has(chat.ModalityImage) {
-				return chat.Unsupported("input", "selected agent does not accept image input")
-			}
-		case chat.PartAudio:
-			if !caps.InputModalities.Has(chat.ModalityAudio) {
-				return chat.Unsupported("input", "selected agent does not accept audio input")
-			}
-		case chat.PartFile:
-			if !caps.InputModalities.Has(chat.ModalityFile) {
-				return chat.Unsupported("input", "selected agent does not accept file input")
-			}
+		switch {
+		case part.Type == chat.PartImage && !caps.InputModalities.Has(chat.ModalityImage):
+			return chat.Unsupported("input", "selected agent does not accept image input")
+		case part.Type == chat.PartAudio && !caps.InputModalities.Has(chat.ModalityAudio):
+			return chat.Unsupported("input", "selected agent does not accept audio input")
+		case part.Type == chat.PartFile && !caps.InputModalities.Has(chat.ModalityFile):
+			return chat.Unsupported("input", "selected agent does not accept file input")
 		}
 		return nil
 	}
@@ -474,23 +468,15 @@ func (h *Handler) validateRequest(req *chat.Request, caps chat.Capabilities) err
 func validateOutputEvent(event chat.Event, caps chat.Capabilities) error {
 	caps = caps.Normalize()
 	checkPart := func(part chat.Part) error {
-		switch part.Type {
-		case chat.PartText:
-			if !caps.OutputModalities.Has(chat.ModalityText) {
-				return chat.Unsupported("output", "selected agent does not provide text output")
-			}
-		case chat.PartImage:
-			if !caps.OutputModalities.Has(chat.ModalityImage) {
-				return chat.Unsupported("output", "selected agent does not provide image output")
-			}
-		case chat.PartAudio:
-			if !caps.OutputModalities.Has(chat.ModalityAudio) {
-				return chat.Unsupported("output", "selected agent does not provide audio output")
-			}
-		case chat.PartFile:
-			if !caps.OutputModalities.Has(chat.ModalityFile) {
-				return chat.Unsupported("output", "selected agent does not provide file output")
-			}
+		switch {
+		case part.Type == chat.PartText && !caps.OutputModalities.Has(chat.ModalityText):
+			return chat.Unsupported("output", "selected agent does not provide text output")
+		case part.Type == chat.PartImage && !caps.OutputModalities.Has(chat.ModalityImage):
+			return chat.Unsupported("output", "selected agent does not provide image output")
+		case part.Type == chat.PartAudio && !caps.OutputModalities.Has(chat.ModalityAudio):
+			return chat.Unsupported("output", "selected agent does not provide audio output")
+		case part.Type == chat.PartFile && !caps.OutputModalities.Has(chat.ModalityFile):
+			return chat.Unsupported("output", "selected agent does not provide file output")
 		}
 		return nil
 	}

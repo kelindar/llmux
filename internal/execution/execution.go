@@ -295,10 +295,10 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 		}
 
 	case chat.EventActivity:
-		if strings.TrimSpace(event.Name) == "" {
+		switch {
+		case strings.TrimSpace(event.Name) == "":
 			return nil, errors.New("activity event requires a name")
-		}
-		if len(event.Data) == 0 || !event.Data.IsValid() {
+		case len(event.Data) == 0 || !event.Data.IsValid():
 			return nil, errors.New("activity event requires valid JSON data")
 		}
 		if err := s.addBytes(int64(len(event.Name) + len(event.Data))); err != nil {

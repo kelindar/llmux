@@ -339,12 +339,12 @@ func (h *Handler) serveOrdinary(
 	state := buildState(&parsed.Request, meta, result, runErr)
 	meta.State = state
 	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
-	if runErr != nil {
+	switch {
+	case runErr != nil:
 		h.logError(r.Context(), runErr)
 		writeProtocolError(w, parsed.Kind, runErr)
 		return
-	}
-	if finalErr != nil {
+	case finalErr != nil:
 		h.logError(r.Context(), finalErr)
 		writeProtocolError(w, parsed.Kind, finalErr)
 		return
