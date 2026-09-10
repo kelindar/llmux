@@ -15,8 +15,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/kelindar/llmux/chat"
 	"time"
+
+	"github.com/kelindar/llmux/chat"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
@@ -786,10 +787,10 @@ func TestValidateRequestDirect(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
 	}), chat.Capabilities{})
-	req := &chat.Request{Target: "agent/basic", Output: chat.OutputSpec{Modalities: chat.ModalityText | chat.ModalityAudio}}
-	err := handler.validateRequest(req, chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText})
+	parsed := parsedRequest{Request: chat.Request{Target: "agent/basic", Output: chat.OutputSpec{Modalities: chat.ModalityText | chat.ModalityAudio}}}
+	err := handler.validateParsed(&parsed, chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText})
 	require.Error(t, err)
-	assert.Equal(t, "unsupported", err.(*chat.APIError).Code)
+	assert.Equal(t, "unsupported", err.(*chat.Error).Code)
 }
 
 func TestOutputEvent(t *testing.T) {
@@ -879,26 +880,26 @@ func TestValidateRequest(t *testing.T) {
 	parallel := false
 	store := true
 	cases := []struct {
-		name string
-		req  chat.Request
-		caps chat.Capabilities
+		name   string
+		parsed parsedRequest
+		caps   chat.Capabilities
 	}{
-		{name: "empty model", req: chat.Request{Target: " ", Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
-		{name: "audio input", req: func() chat.Request {
+		{name: "empty model", parsed: parsedRequest{Request: chat.Request{Target: " ", Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
+		{name: "audio input", parsed: func() parsedRequest {
 			media := chat.InlineMedia("audio/wav", []byte{1})
 			media.Format = "wav"
-			return chat.Request{Target: "agent", Input: []chat.Item{chat.MessageItem(chat.RoleUser, chat.AudioPart(media))}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}
+			return parsedRequest{Request: chat.Request{Target: "agent", Input: []chat.Item{chat.MessageItem(chat.RoleUser, chat.AudioPart(media))}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}
 		}(), caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
-		{name: "max output tokens", req: chat.Request{Target: "agent", Controls: chat.Controls{MaxOutputTokens: &maxTokens}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
-		{name: "parallel tools", req: chat.Request{Target: "agent", Controls: chat.Controls{ParallelToolCall: &parallel}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
-		{name: "store without continuation", req: chat.Request{Target: "agent", Store: &store, Controls: chat.Controls{}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, Continuation: false}},
-		{name: "image generation", req: chat.Request{Target: "agent", Controls: chat.Controls{ImageGeneration: true}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
-		{name: "reasoning summary", req: chat.Request{Target: "agent", Controls: chat.Controls{Reasoning: &chat.ReasoningControl{Summary: true}}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop | chat.ControlReasoning}},
-		{name: "temperature chat.Unsupported", req: chat.Request{Target: "agent", Controls: chat.Controls{Temperature: &temperature}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTopP | chat.ControlStop}},
+		{name: "max output tokens", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{MaxOutputTokens: &maxTokens}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
+		{name: "parallel tools", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{ParallelToolCall: &parallel}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
+		{name: "store without continuation", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, Store: &store}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, Continuation: false}},
+		{name: "image generation", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{ImageGeneration: true}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
+		{name: "reasoning summary", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{Reasoning: &chat.ReasoningControl{Summary: true}}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop | chat.ControlReasoning}},
+		{name: "temperature chat.Unsupported", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{Temperature: &temperature}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTopP | chat.ControlStop}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			err := handler.validateRequest(&test.req, test.caps)
+			err := handler.validateParsed(&test.parsed, test.caps)
 			require.Error(t, err)
 		})
 	}

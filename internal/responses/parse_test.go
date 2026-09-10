@@ -27,7 +27,7 @@ func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
 func requireAPIError(t *testing.T, err error, code, param string) {
 	t.Helper()
 	require.Error(t, err)
-	apiErr, ok := errors.AsType[*chat.APIError](err)
+	apiErr, ok := errors.AsType[*chat.Error](err)
 	require.True(t, ok, "expected chat.APIError, got %T", err)
 	assert.Equal(t, code, apiErr.Code)
 	if param != "" {
@@ -195,7 +195,7 @@ func TestParseRequest(t *testing.T) {
 				require.NotNil(t, parsed.Request.Controls.MaxOutputTokens)
 				require.NotNil(t, parsed.Request.Controls.TopP)
 				require.NotNil(t, parsed.Request.Controls.ParallelToolCall)
-				assert.Equal(t, "v", parsed.Request.Metadata["k"])
+				assert.Equal(t, "v", parsed.Metadata["k"])
 			},
 		},
 		"unsupportedInclude": {
@@ -272,7 +272,7 @@ func TestAdapterValidateEvent(t *testing.T) {
 
 func TestAdapterResponse(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"}
+	meta := responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}}
 	req := chat.Request{Target: "gpt-4.1"}
 
 	t.Run("textMessage", func(t *testing.T) {
@@ -303,7 +303,7 @@ func TestAdapterResponse(t *testing.T) {
 
 func TestAdapterStream(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"}
+	meta := responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}}
 	req := chat.Request{Target: "gpt-4.1"}
 	limits := chat.DefaultLimits()
 
@@ -337,7 +337,7 @@ func TestAdapterStream(t *testing.T) {
 
 func TestAdapterStreamFail(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"}
+	meta := responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("beforeStart", func(t *testing.T) {
@@ -370,15 +370,15 @@ func TestParseRequestExtra(t *testing.T) {
 		"previous": {
 			body: `{"model":"gpt-4.1","input":"x","previous_response_id":"resp_prev"}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				require.NotNil(t, parsed.Request.Previous)
-				assert.Equal(t, "resp_prev", *parsed.Request.Previous)
+				require.NotNil(t, parsed.Previous)
+				assert.Equal(t, "resp_prev", *parsed.Previous)
 			},
 		},
 		"storeFalse": {
 			body: `{"model":"gpt-4.1","input":"x","store":false}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				require.NotNil(t, parsed.Request.Store)
-				assert.False(t, *parsed.Request.Store)
+				require.NotNil(t, parsed.Store)
+				assert.False(t, *parsed.Store)
 			},
 		},
 		"jsonObjectFormat": {
@@ -605,7 +605,7 @@ func TestNewAdapter(t *testing.T) {
 
 func TestAdapterResponseMore(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"}
+	meta := responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}}
 	req := chat.Request{
 		Target:       "gpt-4.1",
 		Instructions: "help",
@@ -715,14 +715,18 @@ func TestAdapterValidateMore(t *testing.T) {
 
 func TestResponseObject(t *testing.T) {
 	req := chat.Request{
-		Target:   "gpt-4.1",
-		Previous: new("prev"),
+		Target: "gpt-4.1",
 		Controls: chat.Controls{
 			ParallelToolCall: new(false),
 			ToolChoice:       &chat.ToolChoice{Mode: "function", Name: "search"},
 		},
 	}
-	value := responseObject(req, responseMeta{Model: "gpt-4.1"}, chat.State{Status: chat.StatusIncomplete}, []any{})
+	resp := chat.Response{
+		Target:   "gpt-4.1",
+		Previous: new("prev"),
+		Status:   chat.StatusIncomplete,
+	}
+	value := responseObject(req, resp, []any{})
 	assert.Equal(t, false, value["parallel_tool_calls"])
 	assert.Equal(t, "prev", value["previous_response_id"])
 }
@@ -735,7 +739,7 @@ func strPtr(v string) *string { return new(v) }
 
 func TestAdapterStreamMore(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"}
+	meta := responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("textDeltaDone", func(t *testing.T) {
@@ -958,7 +962,7 @@ func TestResponseItemImage(t *testing.T) {
 
 func TestCoverageMore(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"}
+	meta := responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("startedFlag", func(t *testing.T) {
@@ -1080,7 +1084,7 @@ func TestCoverageMore(t *testing.T) {
 		value, err := adapter.Response(chat.Request{Target: "gpt-4.1"}, execution.Result{
 			Items:   []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))},
 			Outcome: chat.Outcome{},
-		}, responseMeta{ID: "resp_1", Created: 100, Model: "gpt-4.1"})
+		}, responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}})
 		require.NoError(t, err)
 		assert.Equal(t, "completed", value.(map[string]any)["status"])
 	})

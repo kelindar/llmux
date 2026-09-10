@@ -57,7 +57,7 @@ func TestDecodeString(t *testing.T) {
 
 	_, _, err = DecodeString(object, "age")
 	require.Error(t, err)
-	var apiErr *chat.APIError
+	var apiErr *chat.Error
 	require.True(t, errors.As(err, &apiErr))
 	assert.Equal(t, "age", apiErr.Param)
 }

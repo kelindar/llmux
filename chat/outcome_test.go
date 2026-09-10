@@ -54,18 +54,18 @@ func TestOutcomeValidate(t *testing.T) {
 }
 
 func TestAPIError(t *testing.T) {
-	var nilErr *APIError
+	var nilErr *Error
 	assert.Equal(t, "", nilErr.Error())
 
 	withMessage := NewAPIError(400, "invalid_request_error", "invalid_request", "field", "bad field")
 	assert.Equal(t, "bad field", withMessage.Error())
 	assert.Equal(t, 400, withMessage.Status)
 
-	wrapped := &APIError{Err: errors.New("underlying")}
+	wrapped := &Error{Err: errors.New("underlying")}
 	assert.Equal(t, "underlying", wrapped.Error())
 	assert.Equal(t, errors.New("underlying"), wrapped.Unwrap())
 
-	defaultMsg := &APIError{}
+	defaultMsg := &Error{}
 	assert.Equal(t, "llmux API error", defaultMsg.Error())
 
 	invalid := Invalid("p", "msg")

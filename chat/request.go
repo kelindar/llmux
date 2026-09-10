@@ -161,27 +161,14 @@ type Controls struct {
 }
 
 // Request is the protocol-neutral input passed to Agent.Run.
-//
-// Turn vs Input:
-//   - Turn is the items submitted in this HTTP request only.
-//   - Input is the effective conversation for the agent: loaded history
-//     followed by Turn, exactly once and in order.
-//
-// Store is the explicit wire value (nil when omitted). Retain is the effective
-// content-retention policy after applying the handler's StoreDefault. The
-// handler sets Retain before Accept; applications must treat the request as
-// read-only afterward.
+// It contains only execution fields. Persistence, continuation, and
+// idempotency live on TurnRequest for Lifecycle.Accept.
 type Request struct {
-	Target       string            // Agent target name selected by the resolver.
-	Instructions string            // System or developer instructions for the run.
-	Turn         []Item            // Items submitted in this request only.
-	Input        []Item            // Effective history+turn for Agent.Run.
-	Controls     Controls          // Generation settings.
-	Output       OutputSpec        // Declared output modalities and format.
-	Previous     *string           // Prior response ID for continuation.
-	Store        *bool             // Wire store flag; nil when omitted.
-	Metadata     map[string]string // Request metadata; cloned into State at acceptance.
-	Retain       bool              // Effective content retention; set by the handler.
+	Target       string     // Agent target name selected by the resolver.
+	Instructions string     // System or developer instructions for the run.
+	Input        []Item     // Effective conversation for Agent.Run (history+turn).
+	Controls     Controls   // Generation settings.
+	Output       OutputSpec // Declared output modalities and format.
 }
 
 // Limits bound request, media, event, and accumulated response memory.

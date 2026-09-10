@@ -141,12 +141,11 @@ llmux.WithLifecycle(store.Accept)
 type Lifecycle func(context.Context, *TurnRequest) (Acceptance, error)
 
 type Acceptance struct {
-	ID         string
-	Created    int64
-	Replay     *State
+	Response   Response  // identity for new work; ignored when Replay is set
+	Replay     *Response // when set, skip Agent.Run and encode this result
 	RunTimeout time.Duration // 0=request ctx; >0=detach+bound; <0=rejected
 	Activity   bool
-	Finish     func(context.Context, *TurnResult) error
+	Finish     func(context.Context, *Response, error) error
 }
 ```
 
@@ -154,7 +153,7 @@ Ordering when a Lifecycle is configured:
 
 1. Validate the request, resolve effective store policy, load continuation.
 2. `Accept` — reserve identity, reject conflicts, or return an idempotent
-   `*State` replay. Capture request-local resources (idempotency
+   `*Response` replay. Capture request-local resources (idempotency
    key) on `Acceptance.Finish` instead of reconnecting through global maps.
 3. `Agent.Run` (skipped on replay). `RunTimeout` of zero follows the HTTP
    request context. A positive duration detaches client cancellation,
@@ -167,30 +166,31 @@ Ordering when a Lifecycle is configured:
    any detached, bounded cleanup work, for example
    `context.WithTimeout(context.WithoutCancel(ctx), timeout)`. Not called
    for Accept errors, completed replays, or when Finish is nil.
-   `TurnResult.State` shares nested data with the response encoded after
-   Finish returns: treat it as read-only and call `State.Clone()` before
-   retaining or modifying it.
+   The `Response` passed to Finish shares nested data with the response
+   encoded after Finish returns: treat it as read-only and call
+   `Response.Clone()` before retaining or modifying it. Operational Go
+   errors are passed as the Finish error argument and are never copied
+   into public error text automatically.
 5. Advertise successful completion only after Finish succeeds.
 
-`State` is the shared client-visible payload for creation,
-finalization, replay, and `ResponsesBody` retrieval: status, output, usage,
-sanitized public error, incomplete reason, completion timestamp, metadata,
-and effective store. Identity (`id`, `created_at`) stays separate and
-application-controlled. Operational Go errors remain on `TurnResult.Err` and
-are never copied into public error text automatically.
+`Response` is the shared client-visible payload for creation,
+finalization, replay, and `ResponsesBody` retrieval: identity, timestamps,
+status, output, usage, sanitized public error, incomplete reason,
+metadata, effective store, and retrieval fields such as target and
+previous response ID.
 
 Without a Lifecycle, llmux keeps generating response IDs and timestamps
-internally. Effective retention (`Request.Retain`) requires a Lifecycle.
+internally. Effective retention (`TurnRequest.Retain`) requires a Lifecycle.
 `WithStoreDefault` sets the policy when `store` is omitted (default false).
 Explicit `store:true` / `store:false` always win. Applications that cannot
 honor `store:false` should reject in Accept.
 
-`Request.Turn` is this request's input. `Request.Input` is the effective
-conversation for the agent. Persist `Turn` plus `State.Output` with a
+`TurnRequest.Turn` is this request's input. `Request.Input` is the effective
+conversation for the agent. Persist `Turn` plus `Response.Output` with a
 parent reference — do not rewrite full history each turn or retain the
 accumulated `Input` slice.
 
-Metadata from the accepted request is cloned into `State` and reused
+Metadata from the accepted request is cloned into `Response` and reused
 for replay/retrieval; a retry's metadata does not replace the original.
 
 Mount under an application prefix with `http.StripPrefix` (for example

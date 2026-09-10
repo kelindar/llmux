@@ -88,9 +88,9 @@ func writeProtocolError(w http.ResponseWriter, p protocol, err error) {
 	internalprotocol.WriteError(w, p, err)
 }
 
-func asAPIError(err error) *chat.APIError { return internalprotocol.AsAPIError(err) }
+func asAPIError(err error) *chat.Error { return internalprotocol.AsAPIError(err) }
 
-func anthropicErrorType(err *chat.APIError) string {
+func anthropicErrorType(err *chat.Error) string {
 	return internalprotocol.AnthropicErrorType(err)
 }
 
@@ -101,16 +101,16 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		writeProtocolError(w, parsed.Kind, err)
 		return
 	}
-	if err := h.validateRequest(&parsed.Request, capabilities); err != nil {
+	if err := h.validateParsed(&parsed, capabilities); err != nil {
 		writeProtocolError(w, parsed.Kind, err)
 		return
 	}
-	if err := h.prepareRequest(r.Context(), &parsed.Request); err != nil {
+	if err := h.prepareParsed(r.Context(), &parsed); err != nil {
 		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
 		return
 	}
-	if err := h.validateRequest(&parsed.Request, capabilities); err != nil {
+	if err := h.validateParsed(&parsed, capabilities); err != nil {
 		writeProtocolError(w, parsed.Kind, err)
 		return
 	}
@@ -122,23 +122,10 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	}
 
 	meta := responseMeta{
-		ID:       acceptance.ID,
-		Created:  acceptance.Created,
-		Model:    parsed.Request.Target,
+		Response: initialResponse(acceptance.Response, &parsed),
 		Activity: acceptance.Activity,
-		State: chat.State{
-			Metadata: chat.CloneMetadata(parsed.Request.Metadata),
-			Store:    parsed.Request.Retain,
-		},
 	}
-	if meta.ID == "" {
-		meta.ID = newID()
-	}
-	if meta.Created == 0 {
-		meta.Created = unixNow()
-	}
-	acceptance.ID = meta.ID
-	acceptance.Created = meta.Created
+	acceptance.Response = meta.Response
 
 	adapter := adapterFor(parsed.Kind)
 	validateEvent := func(event chat.Event) error {
@@ -173,19 +160,11 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	if acceptance.RunTimeout < 0 {
 		invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
 		if acceptance.Finish != nil {
-			_ = acceptance.Finish(r.Context(), &chat.TurnResult{
-				ID:      meta.ID,
-				Created: meta.Created,
-				Request: &parsed.Request,
-				State: chat.State{
-					Status:   chat.StatusFailed,
-					Error:    publicAPIError(invalid),
-					Metadata: chat.CloneMetadata(meta.State.Metadata),
-					Store:    parsed.Request.Retain,
-				},
-				Err:    invalid,
-				Stream: parsed.Stream,
-			})
+			failed := meta.Response
+			failed.Status = chat.StatusFailed
+			failed.Error = publicAPIError(invalid)
+			failed.CompletedAt = unixNow()
+			_ = acceptance.Finish(r.Context(), &failed, invalid)
 		}
 		writeProtocolError(w, parsed.Kind, invalid)
 		return
@@ -205,12 +184,40 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	h.serveOrdinary(w, r, parsed, agent, adapter, meta, acceptance, runCtx, validateEvent)
 }
 
+func initialResponse(seed chat.Response, parsed *parsedRequest) chat.Response {
+	resp := seed
+	if resp.ID == "" {
+		resp.ID = newID()
+	}
+	if resp.Created == 0 {
+		resp.Created = unixNow()
+	}
+	if len(resp.Metadata) == 0 {
+		resp.Metadata = chat.CloneMetadata(parsed.Metadata)
+	} else {
+		resp.Metadata = chat.CloneMetadata(resp.Metadata)
+	}
+	resp.Store = parsed.Retain
+	resp.Target = parsed.Request.Target
+	resp.Instructions = parsed.Request.Instructions
+	if parsed.Previous != nil {
+		p := *parsed.Previous
+		resp.Previous = &p
+	}
+	return resp
+}
+
 func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Acceptance, bool, error) {
 	if h.lifecycle == nil {
 		return chat.Acceptance{}, false, nil
 	}
 	accepted, err := h.lifecycle(r.Context(), &chat.TurnRequest{
 		Request:        &parsed.Request,
+		Turn:           parsed.Turn,
+		Previous:       parsed.Previous,
+		Metadata:       parsed.Metadata,
+		Store:          parsed.Store,
+		Retain:         parsed.Retain,
 		Stream:         parsed.Stream,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	})
@@ -220,12 +227,11 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Accep
 	return accepted, true, nil
 }
 
-func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state chat.State) {
-	meta.State = state
-	// state.Output is already independent (Acceptance.Replay was Clone'd).
+func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, resp chat.Response) {
+	meta.Response = resp
 	result := execution.Result{
-		Items:   state.Output,
-		Outcome: outcomeFromState(state),
+		Items:   resp.Output,
+		Outcome: outcomeFromResponse(resp),
 	}
 	if parsed.Stream {
 		stream := adapter.Stream(w, parsed, &meta, h.limits)
@@ -288,9 +294,9 @@ func (h *Handler) serveStream(
 		return nil
 	})
 
-	state := buildState(&parsed.Request, meta, result, runErr)
-	meta.State = state
-	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
+	resp := buildResponse(meta.Response, result, runErr)
+	meta.Response = resp
+	finalErr := h.finishTurn(runCtx, acceptance, &resp, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
 		if delivering && stream.Started() {
@@ -312,7 +318,7 @@ func (h *Handler) serveStream(
 	if !delivering {
 		return
 	}
-	if err := stream.Complete(outcomeFromState(state), state.Output); err != nil {
+	if err := stream.Complete(outcomeFromResponse(resp), resp.Output); err != nil {
 		h.logError(r.Context(), err)
 		if stream.Started() {
 			_ = stream.Fail(err)
@@ -336,9 +342,9 @@ func (h *Handler) serveOrdinary(
 	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event chat.Event) error {
 		return validateEvent(event)
 	})
-	state := buildState(&parsed.Request, meta, result, runErr)
-	meta.State = state
-	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
+	resp := buildResponse(meta.Response, result, runErr)
+	meta.Response = resp
+	finalErr := h.finishTurn(runCtx, acceptance, &resp, runErr)
 	switch {
 	case runErr != nil:
 		h.logError(r.Context(), runErr)
@@ -349,7 +355,7 @@ func (h *Handler) serveOrdinary(
 		writeProtocolError(w, parsed.Kind, finalErr)
 		return
 	}
-	body, err := adapter.Response(parsed.Request, execution.Result{Items: state.Output, Outcome: outcomeFromState(state)}, meta)
+	body, err := adapter.Response(parsed.Request, execution.Result{Items: resp.Output, Outcome: outcomeFromResponse(resp)}, meta)
 	if err != nil {
 		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
@@ -361,58 +367,43 @@ func (h *Handler) serveOrdinary(
 func (h *Handler) finishTurn(
 	runCtx context.Context,
 	acceptance chat.Acceptance,
-	parsed parsedRequest,
-	meta responseMeta,
-	state chat.State,
+	resp *chat.Response,
 	runErr error,
 ) error {
 	if acceptance.Finish == nil {
 		return nil
 	}
-	return acceptance.Finish(runCtx, &chat.TurnResult{
-		ID:      meta.ID,
-		Created: meta.Created,
-		Request: &parsed.Request,
-		State:   state,
-		Err:     runErr,
-		Stream:  parsed.Stream,
-	})
+	return acceptance.Finish(runCtx, resp, runErr)
 }
 
-func buildState(req *chat.Request, meta responseMeta, result execution.Result, runErr error) chat.State {
-	state := chat.State{
-		// Take ownership of execution output; Result is not retained after this.
-		Output:      result.Items,
-		Usage:       result.Outcome.Usage,
-		Metadata:    chat.CloneMetadata(meta.State.Metadata),
-		Store:       req.Retain,
-		CompletedAt: unixNow(),
-	}
-	if len(state.Metadata) == 0 {
-		state.Metadata = chat.CloneMetadata(req.Metadata)
-	}
+func buildResponse(base chat.Response, result execution.Result, runErr error) chat.Response {
+	resp := base
+	// Take ownership of execution output; Result is not retained after this.
+	resp.Output = result.Items
+	resp.Usage = result.Outcome.Usage
+	resp.CompletedAt = unixNow()
 	switch {
 	case runErr != nil:
-		state.Status = chat.StatusFailed
+		resp.Status = chat.StatusFailed
 		if result.Outcome.Status == chat.StatusCancelled {
-			state.Status = chat.StatusCancelled
+			resp.Status = chat.StatusCancelled
 		}
-		state.Error = publicAPIError(runErr)
+		resp.Error = publicAPIError(runErr)
 	case result.Outcome.Status != "":
-		state.Status = result.Outcome.Status
+		resp.Status = result.Outcome.Status
 	default:
-		state.Status = chat.StatusCompleted
+		resp.Status = chat.StatusCompleted
 	}
-	if state.Status == chat.StatusIncomplete {
-		state.Incomplete = incompleteReason(result.Outcome.StopReason)
+	if resp.Status == chat.StatusIncomplete {
+		resp.Incomplete = incompleteReason(result.Outcome.StopReason)
 	}
-	if state.Status == chat.StatusInProgress {
-		state.CompletedAt = 0
+	if resp.Status == chat.StatusInProgress {
+		resp.CompletedAt = 0
 	}
-	return state
+	return resp
 }
 
-func publicAPIError(err error) *chat.APIError {
+func publicAPIError(err error) *chat.Error {
 	api := asAPIError(err)
 	if api == nil {
 		return nil
@@ -433,15 +424,15 @@ func incompleteReason(reason chat.StopReason) string {
 	}
 }
 
-func outcomeFromState(state chat.State) chat.Outcome {
-	outcome := chat.Outcome{Status: state.Status, Usage: state.Usage}
-	switch state.Status {
+func outcomeFromResponse(resp chat.Response) chat.Outcome {
+	outcome := chat.Outcome{Status: resp.Status, Usage: resp.Usage}
+	switch resp.Status {
 	case chat.StatusFailed:
 		outcome.StopReason = chat.StopError
 	case chat.StatusCancelled:
 		outcome.StopReason = chat.StopCancelled
 	case chat.StatusIncomplete:
-		if state.Incomplete == "max_output_tokens" {
+		if resp.Incomplete == "max_output_tokens" {
 			outcome.StopReason = chat.StopLength
 		}
 	}

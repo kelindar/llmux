@@ -135,12 +135,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.serveModels(w, r)
 	default:
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "not found"})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "not found"})
 	}
 }
 
-func methodError(method string) *chat.APIError {
-	return &chat.APIError{Status: http.StatusMethodNotAllowed, Type: "invalid_request_error", Code: "method_not_allowed", Message: "method " + method + " is not allowed"}
+func methodError(method string) *chat.Error {
+	return &chat.Error{Status: http.StatusMethodNotAllowed, Type: "invalid_request_error", Code: "method_not_allowed", Message: "method " + method + " is not allowed"}
 }
 
 func (h *Handler) serveModels(w http.ResponseWriter, _ *http.Request) {
@@ -160,10 +160,10 @@ func (h *Handler) readBody(w http.ResponseWriter, r *http.Request, limit int64) 
 	}
 	data, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
-		return nil, &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "body_read_failed", Message: "could not read request body", Err: err}
+		return nil, &chat.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "body_read_failed", Message: "could not read request body", Err: err}
 	}
 	if int64(len(data)) > limit {
-		return nil, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large", Message: "request body exceeds the configured limit"}
+		return nil, &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large", Message: "request body exceeds the configured limit"}
 	}
 	return data, nil
 }
@@ -239,8 +239,8 @@ func decodeStringSlice(object map[string]jsontext.Value, key string) ([]string, 
 	return values, nil
 }
 
-func fmtError(param, message string, err error) *chat.APIError {
-	return &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request", Param: param, Message: message, Err: err}
+func fmtError(param, message string, err error) *chat.Error {
+	return &chat.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request", Param: param, Message: message, Err: err}
 }
 
 func (h *Handler) resolve(ctx context.Context, target string) (chat.Agent, chat.Capabilities, error) {
@@ -257,49 +257,49 @@ func (h *Handler) resolve(ctx context.Context, target string) (chat.Agent, chat.
 	return agent, capabilities.Normalize(), nil
 }
 
-func (h *Handler) prepareRequest(ctx context.Context, req *chat.Request) error {
-	if req.Turn == nil {
-		req.Turn = cloneItems(req.Input)
+func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) error {
+	if parsed.Turn == nil {
+		parsed.Turn = cloneItems(parsed.Request.Input)
 	}
-	if req.Previous != nil {
+	if parsed.Previous != nil {
 		if h.continuation == nil {
 			return chat.Unsupported("previous_response_id", "continuation is not configured")
 		}
-		prior, err := h.continuation.Load(ctx, *req.Previous)
+		prior, err := h.continuation.Load(ctx, *parsed.Previous)
 		if err != nil {
-			return &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "previous_response_not_found", Param: "previous_response_id", Message: "previous response was not found", Err: err}
+			return &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "previous_response_not_found", Param: "previous_response_id", Message: "previous response was not found", Err: err}
 		}
-		input := make([]chat.Item, 0, len(prior)+len(req.Turn))
+		input := make([]chat.Item, 0, len(prior)+len(parsed.Turn))
 		for _, item := range prior {
 			input = append(input, item.Clone())
 		}
-		input = append(input, cloneItems(req.Turn)...)
-		req.Input = input
+		input = append(input, cloneItems(parsed.Turn)...)
+		parsed.Request.Input = input
 	}
-	h.applyStorePolicy(req)
+	h.applyStorePolicy(parsed)
 	switch {
-	case req.Retain && h.lifecycle == nil:
+	case parsed.Retain && h.lifecycle == nil:
 		return chat.Unsupported("store", "response persistence requires a Lifecycle")
 	case h.assets == nil:
 		return nil
 	}
 	count := 0
-	for item := range req.Input {
-		if err := h.resolveItemMedia(ctx, &req.Input[item], &count); err != nil {
+	for item := range parsed.Request.Input {
+		if err := h.resolveItemMedia(ctx, &parsed.Request.Input[item], &count); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// applyStorePolicy sets Request.Retain from the wire store field and the
-// configured default without mutating Request.Store.
-func (h *Handler) applyStorePolicy(req *chat.Request) {
+// applyStorePolicy sets Retain from the wire store field and the configured
+// default without mutating Store.
+func (h *Handler) applyStorePolicy(parsed *parsedRequest) {
 	switch {
-	case req.Store != nil:
-		req.Retain = *req.Store
+	case parsed.Store != nil:
+		parsed.Retain = *parsed.Store
 	default:
-		req.Retain = h.storeDefault
+		parsed.Retain = h.storeDefault
 	}
 }
 
@@ -314,7 +314,7 @@ func (h *Handler) resolveItemMedia(ctx context.Context, item *chat.Item, count *
 		}
 		media, err := h.assets(ctx, *part.Media, h.limits.MaxMediaBytes)
 		if err != nil {
-			return &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "asset_resolution_failed", Param: "input", Message: "could not resolve media asset", Err: err}
+			return &chat.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "asset_resolution_failed", Param: "input", Message: "could not resolve media asset", Err: err}
 		}
 		part.Media = &media
 		return nil
@@ -332,7 +332,8 @@ func (h *Handler) resolveItemMedia(ctx context.Context, item *chat.Item, count *
 	return nil
 }
 
-func (h *Handler) validateRequest(req *chat.Request, caps chat.Capabilities) error {
+func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Capabilities) error {
+	req := &parsed.Request
 	if strings.TrimSpace(req.Target) == "" {
 		return chat.Invalid("model", "model is required")
 	}
@@ -348,9 +349,9 @@ func (h *Handler) validateRequest(req *chat.Request, caps chat.Capabilities) err
 		return chat.Unsupported("stop", "selected agent does not support stop sequences")
 	case req.Controls.ParallelToolCall != nil && !caps.GenerationControls.Has(chat.ControlParallelToolCalls):
 		return chat.Unsupported("parallel_tool_calls", "selected agent does not support parallel tool calls")
-	case req.Previous != nil && !caps.Continuation:
+	case parsed.Previous != nil && !caps.Continuation:
 		return chat.Unsupported("previous_response_id", "selected agent does not support continuation")
-	case req.Store != nil && *req.Store && !caps.Continuation:
+	case parsed.Store != nil && *parsed.Store && !caps.Continuation:
 		return chat.Unsupported("store", "selected agent does not support continuation")
 	}
 	assets := 0

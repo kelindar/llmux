@@ -73,7 +73,7 @@ func TestSSEWriter(t *testing.T) {
 		writer := NewSSEWriter(rec, tiny)
 		err := writer.Write("", map[string]any{"payload": "too large for limit"})
 		require.Error(t, err)
-		apiErr, ok := errors.AsType[*chat.APIError](err)
+		apiErr, ok := errors.AsType[*chat.Error](err)
 		require.True(t, ok)
 		assert.Equal(t, "event_too_large", apiErr.Code)
 	})
@@ -111,7 +111,7 @@ func TestAsAPIError(t *testing.T) {
 			message: "internal server error",
 		},
 		"apiErrorDefaults": {
-			err:     &chat.APIError{Status: 0, Message: ""},
+			err:     &chat.Error{Status: 0, Message: ""},
 			status:  http.StatusInternalServerError,
 			typ:     "server_error",
 			code:    "server_error",
@@ -135,7 +135,7 @@ func TestAsAPIError(t *testing.T) {
 
 func TestAnthropicErrorType(t *testing.T) {
 	assert.Equal(t, "invalid_request_error", AnthropicErrorType(chat.Invalid("x", "y")))
-	assert.Equal(t, "api_error", AnthropicErrorType(&chat.APIError{Type: "server_error"}))
+	assert.Equal(t, "api_error", AnthropicErrorType(&chat.Error{Type: "server_error"}))
 }
 
 func TestWriteError(t *testing.T) {

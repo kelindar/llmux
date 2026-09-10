@@ -205,10 +205,14 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 			return parsedRequest{}, err
 		}
 	}
-	return parsedRequest{Kind: protocolResponses, Request: chat.Request{
-		Target: target, Instructions: instructions, Input: input, Controls: controls, Output: output,
-		Previous: previous, Store: store, Metadata: metadata,
-	}, Stream: stream}, nil
+	return parsedRequest{
+		Kind:     protocolResponses,
+		Request:  chat.Request{Target: target, Instructions: instructions, Input: input, Controls: controls, Output: output},
+		Previous: previous,
+		Store:    store,
+		Metadata: metadata,
+		Stream:   stream,
+	}, nil
 }
 
 func parseResponsesInput(raw jsontext.Value) ([]chat.Item, error) {

@@ -23,20 +23,24 @@ const (
 )
 
 // ParsedRequest is the protocol-neutral request produced by a wire decoder.
+// Request holds agent execution fields. Turn, Previous, Store, Metadata, and
+// Retain are acceptance/persistence concerns filled by parsers and the handler.
 type ParsedRequest struct {
-	Kind         Kind         // wire protocol that parsed the request
-	Request      chat.Request // canonical request payload
-	Stream       bool         // whether the client requested streaming
-	IncludeUsage bool         // Chat Completions stream_options.include_usage only
+	Kind         Kind              // wire protocol that parsed the request
+	Request      chat.Request      // canonical execution request for Agent.Run
+	Turn         []chat.Item       // items submitted in this HTTP request only
+	Previous     *string           // prior response ID for continuation
+	Store        *bool             // wire store flag; nil when omitted
+	Metadata     map[string]string // application metadata for the response
+	Retain       bool              // effective retention after StoreDefault
+	Stream       bool              // whether the client requested streaming
+	IncludeUsage bool              // Chat Completions stream_options.include_usage only
 }
 
-// Meta contains response identity shared by all protocol encoders.
+// Meta contains the response value shared by all protocol encoders.
 type Meta struct {
-	ID       string     // response identifier assigned by the server or Lifecycle
-	Created  int64      // Unix timestamp when the response was created
-	Model    string     // resolved model name echoed to the client
-	Activity bool       // when true, Responses may encode EventActivity frames
-	State    chat.State // client-visible status, error, metadata, and store
+	Response chat.Response // identity, status, output, and retrieval fields
+	Activity bool          // when true, Responses may encode EventActivity frames
 }
 
 // StreamEncoder turns canonical events into one protocol's SSE lifecycle.
@@ -58,7 +62,7 @@ type Adapter interface {
 	// Response builds a non-streaming response body for result.
 	Response(chat.Request, execution.Result, Meta) (any, error)
 	// Stream returns an SSE encoder for the given response writer.
-	// meta is retained for the stream lifetime so terminal State
+	// meta is retained for the stream lifetime so terminal Response
 	// updates are visible to Complete.
 	Stream(http.ResponseWriter, ParsedRequest, *Meta, chat.Limits) StreamEncoder
 }
@@ -161,11 +165,11 @@ func WriteError(w http.ResponseWriter, kind Kind, err error) {
 }
 
 // AsAPIError normalizes err into a chat.APIError with safe defaults.
-func AsAPIError(err error) *chat.APIError {
+func AsAPIError(err error) *chat.Error {
 	if err == nil {
 		return chat.NewAPIError(http.StatusInternalServerError, "server_error", "server_error", "", "internal server error")
 	}
-	if apiErr, ok := errors.AsType[*chat.APIError](err); ok {
+	if apiErr, ok := errors.AsType[*chat.Error](err); ok {
 		copy := *apiErr
 		if copy.Status < http.StatusBadRequest || copy.Status > 599 {
 			copy.Status = http.StatusInternalServerError
@@ -181,11 +185,11 @@ func AsAPIError(err error) *chat.APIError {
 		}
 		return &copy
 	}
-	return &chat.APIError{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}
+	return &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}
 }
 
 // AnthropicErrorType maps a canonical API error to an Anthropic error type string.
-func AnthropicErrorType(err *chat.APIError) string {
+func AnthropicErrorType(err *chat.Error) string {
 	switch err.Type {
 	case "invalid_request_error", "authentication_error", "permission_error", "not_found_error", "rate_limit_error", "api_error", "overloaded_error":
 		return err.Type

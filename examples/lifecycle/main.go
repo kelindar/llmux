@@ -36,11 +36,8 @@ func main() {
 }
 
 type saved struct {
-	ID      string
-	Created int64
-	Target  string
-	Turn    []chat.Item
-	State   chat.State
+	Turn     []chat.Item
+	Response chat.Response
 }
 
 type store struct {
@@ -50,28 +47,23 @@ type store struct {
 }
 
 func (s *store) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
-	if !turn.Request.Retain {
+	if !turn.Retain {
 		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
 	}
 	n := s.seq.Add(1)
 	id := "resp_" + strconv.FormatInt(n, 10)
-	target := turn.Request.Target
-	turnItems := cloneItems(turn.Request.Turn)
+	turnItems := cloneItems(turn.Turn)
 	return chat.Acceptance{
-		ID:      id,
-		Created: n,
-		Finish: func(_ context.Context, result *chat.TurnResult) error {
-			if !result.State.Store {
+		Response: chat.Response{ID: id, Created: n},
+		Finish: func(_ context.Context, resp *chat.Response, _ error) error {
+			if !resp.Store {
 				return nil
 			}
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			s.byID[result.ID] = saved{
-				ID:      result.ID,
-				Created: result.Created,
-				Target:  target,
-				Turn:    turnItems,
-				State:   result.State.Clone(),
+			s.byID[resp.ID] = saved{
+				Turn:     turnItems,
+				Response: resp.Clone(),
 			}
 			return nil
 		},

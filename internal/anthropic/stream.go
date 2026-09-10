@@ -34,7 +34,7 @@ func (s *anthropicStream) start() error {
 	if s.started {
 		return nil
 	}
-	if err := s.emit("message_start", map[string]any{"message": map[string]any{"id": s.meta.ID, "type": "message", "role": "assistant", "model": s.meta.Model, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": map[string]any{}}}); err != nil {
+	if err := s.emit("message_start", map[string]any{"message": map[string]any{"id": s.meta.Response.ID, "type": "message", "role": "assistant", "model": s.meta.Response.Target, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": map[string]any{}}}); err != nil {
 		return err
 	}
 	s.started = true

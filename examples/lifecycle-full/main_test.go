@@ -19,8 +19,8 @@ func TestLifecycleFull(t *testing.T) {
 	store := newStore()
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		text := "turn"
-		if len(req.Turn) > 0 && len(req.Turn[0].Content) > 0 {
-			text = req.Turn[0].Content[0].Text
+		if len(req.Input) > 0 && len(req.Input[len(req.Input)-1].Content) > 0 {
+			text = req.Input[len(req.Input)-1].Content[0].Text
 		}
 		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
@@ -36,7 +36,7 @@ func TestLifecycleFull(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		body, err := llmux.ResponsesBody(rec.renderRequest(), rec.State, rec.ID, rec.Created)
+		body, err := llmux.ResponsesBody(rec.Response)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -68,9 +68,10 @@ func TestLifecycleFull(t *testing.T) {
 	require.Len(t, rec2.Turn, 1)
 	assert.Equal(t, "one", rec1.Turn[0].Content[0].Text)
 	assert.Equal(t, "two", rec2.Turn[0].Content[0].Text)
-	assert.Equal(t, id, rec2.Parent)
-	assert.Equal(t, chat.StatusCompleted, rec1.State.Status)
-	assert.True(t, rec1.State.Store)
+	require.NotNil(t, rec2.Response.Previous)
+	assert.Equal(t, id, *rec2.Response.Previous)
+	assert.Equal(t, chat.StatusCompleted, rec1.Response.Status)
+	assert.True(t, rec1.Response.Store)
 
 	history, err := store.Load(context.Background(), id2)
 	require.NoError(t, err)

@@ -11,17 +11,21 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/kelindar/llmux/chat"
 	"time"
+
+	"github.com/kelindar/llmux/chat"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type replayEntry struct {
-	id      string
-	created int64
-	state   chat.State
+	response chat.Response
+}
+
+type savedTurn struct {
+	Turn     []chat.Item
+	Response chat.Response
 }
 
 type memoryLife struct {
@@ -30,7 +34,7 @@ type memoryLife struct {
 	finals          int
 	byKey           map[string]replayEntry
 	running         map[string]bool
-	records         map[string]chat.TurnResult
+	records         map[string]savedTurn
 	history         map[string][]chat.Item
 	ctxSeen         atomic.Bool
 	failOnce        atomic.Bool
@@ -43,7 +47,7 @@ func newMemoryLife() *memoryLife {
 	return &memoryLife{
 		byKey:   make(map[string]replayEntry),
 		running: make(map[string]bool),
-		records: make(map[string]chat.TurnResult),
+		records: make(map[string]savedTurn),
 		history: make(map[string][]chat.Item),
 	}
 }
@@ -66,21 +70,22 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 	defer m.mu.Unlock()
 	m.accepts++
 	key := turn.IdempotencyKey
-	if turn.Request.Store != nil && !*turn.Request.Store && !m.allowNoStore {
+	if turn.Store != nil && !*turn.Store && !m.allowNoStore {
 		return chat.Acceptance{}, chat.Unsupported("store", "application requires store")
 	}
 	if key != "" {
 		if m.running[key] {
-			return chat.Acceptance{}, &chat.APIError{Status: http.StatusConflict, Type: "invalid_request_error", Code: "request_in_progress", Message: "request already running"}
+			return chat.Acceptance{}, &chat.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "request_in_progress", Message: "request already running"}
 		}
 		if replay, ok := m.byKey[key]; ok {
-			state := replay.state.Clone()
-			return chat.Acceptance{ID: replay.id, Created: replay.created, Replay: &state}, nil
+			r := replay.response.Clone()
+			return chat.Acceptance{Replay: &r}, nil
 		}
 		m.running[key] = true
 	}
 
-	acc := chat.Acceptance{ID: "resp_app", Created: 99}
+	turnItems := cloneItems(turn.Turn)
+	acc := chat.Acceptance{Response: chat.Response{ID: "resp_app", Created: 99}}
 	if turn.Request.Controls.Extensions["x-activity"] != nil {
 		acc.Activity = true
 	}
@@ -94,13 +99,13 @@ func (m *memoryLife) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.A
 	if m.negativeTimeout {
 		acc.RunTimeout = -time.Second
 	}
-	acc.Finish = func(ctx context.Context, result *chat.TurnResult) error {
-		return m.finish(ctx, key, result)
+	acc.Finish = func(ctx context.Context, resp *chat.Response, err error) error {
+		return m.finish(ctx, key, turnItems, resp, err)
 	}
 	return acc, nil
 }
 
-func (m *memoryLife) finish(ctx context.Context, key string, result *chat.TurnResult) error {
+func (m *memoryLife) finish(ctx context.Context, key string, turnItems []chat.Item, resp *chat.Response, runErr error) error {
 	if m.boundCleanup {
 		cleanupTimeout := 50 * time.Millisecond
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
@@ -134,18 +139,14 @@ func (m *memoryLife) finish(ctx context.Context, key string, result *chat.TurnRe
 	}
 	if key != "" {
 		delete(m.running, key)
-		if result.State.Store {
-			m.byKey[key] = replayEntry{
-				id:      result.ID,
-				created: result.Created,
-				state:   result.State.Clone(),
-			}
+		if resp.Store {
+			m.byKey[key] = replayEntry{response: resp.Clone()}
 		}
 	}
-	if result.State.Store && result.Err == nil {
-		items := append(cloneItems(result.Request.Turn), cloneItems(result.State.Output)...)
-		m.history[result.ID] = items
-		m.records[result.ID] = *result
+	if resp.Store && runErr == nil {
+		items := append(cloneItems(turnItems), cloneItems(resp.Output)...)
+		m.history[resp.ID] = items
+		m.records[resp.ID] = savedTurn{Turn: turnItems, Response: resp.Clone()}
 	}
 	return nil
 }
@@ -219,9 +220,9 @@ func TestLifecycle(t *testing.T) {
 
 		life.mu.Lock()
 		entry := life.byKey["replay-iso"]
-		require.NotEmpty(t, entry.state.Output)
-		entry.state.Output[0].Content[0].Text = "mutated-store"
-		before := entry.state.Clone()
+		require.NotEmpty(t, entry.response.Output)
+		entry.response.Output[0].Content[0].Text = "mutated-store"
+		before := entry.response.Clone()
 		life.byKey["replay-iso"] = entry
 		life.mu.Unlock()
 
@@ -230,7 +231,7 @@ func TestLifecycle(t *testing.T) {
 		assert.Contains(t, replay.Body.String(), "mutated-store")
 
 		life.mu.Lock()
-		after := life.byKey["replay-iso"].state
+		after := life.byKey["replay-iso"].response
 		life.mu.Unlock()
 		assert.Equal(t, before.Output[0].Content[0].Text, after.Output[0].Content[0].Text)
 	})
@@ -246,7 +247,7 @@ func TestLifecycle(t *testing.T) {
 
 		life.mu.Lock()
 		entry := life.byKey["live"]
-		entry.state.Output[0].Content[0].Text = "stored-only"
+		entry.response.Output[0].Content[0].Text = "stored-only"
 		life.byKey["live"] = entry
 		life.mu.Unlock()
 		assert.Contains(t, rec.Body.String(), "live")
@@ -259,7 +260,7 @@ func TestLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		_, err = life.Accept(context.WithValue(context.Background(), ctxKey{}, "v"), &chat.TurnRequest{Request: &chat.Request{Target: "a"}, IdempotencyKey: "busy"})
 		require.Error(t, err)
-		assert.Equal(t, "request_in_progress", err.(*chat.APIError).Code)
+		assert.Equal(t, "request_in_progress", err.(*chat.Error).Code)
 	})
 
 	t.Run("exactly one finalize", func(t *testing.T) {
@@ -299,21 +300,67 @@ func TestLifecycle(t *testing.T) {
 	t.Run("turn local continuation", func(t *testing.T) {
 		life := newMemoryLife()
 		var turns []int
+		var acceptTurn, acceptInput int
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-			turns = append(turns, len(req.Turn), len(req.Input))
+			turns = append(turns, len(req.Input))
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
+		}), chat.Capabilities{Continuation: true}, WithLifecycle(func(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
+			acceptTurn = len(turn.Turn)
+			acceptInput = len(turn.Request.Input)
+			return life.Accept(ctx, turn)
+		}), WithContinuationStore(life))
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"a"}`, nil)
 		require.Equal(t, http.StatusOK, first.Code)
 		id := decodeResponse(t, first)["id"].(string)
+		life.mu.Lock()
+		firstRec := life.records[id]
+		life.mu.Unlock()
+		require.Len(t, firstRec.Turn, 1)
+		assert.Equal(t, "a", firstRec.Turn[0].Content[0].Text)
+		assert.Nil(t, firstRec.Response.Previous)
+		assert.Equal(t, "agent/basic", firstRec.Response.Target)
+
 		second := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"previous_response_id":"`+id+`","input":"b"}`, nil)
 		require.Equal(t, http.StatusOK, second.Code)
-		require.Equal(t, []int{1, 1, 1, 3}, turns)
+		require.Equal(t, []int{1, 3}, turns)
+		assert.Equal(t, 1, acceptTurn)
+		assert.Equal(t, 3, acceptInput)
 		life.mu.Lock()
 		rec := life.records[id]
 		life.mu.Unlock()
-		assert.Len(t, rec.Request.Turn, 1)
-		assert.Len(t, rec.State.Output, 1)
+		// Fixed test ID is reused; final record is the latest turn only (not accumulated Input).
+		assert.Len(t, rec.Turn, 1)
+		assert.Equal(t, "b", rec.Turn[0].Content[0].Text)
+		assert.Len(t, rec.Response.Output, 1)
+		require.NotNil(t, rec.Response.Previous)
+		assert.Equal(t, id, *rec.Response.Previous)
+	})
+
+	t.Run("accept keeps execution options for fingerprinting", func(t *testing.T) {
+		life := newMemoryLife()
+		var temp *float64
+		var tools int
+		var ext bool
+		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, emit(chat.Text("ok"))
+		}), chat.Capabilities{
+			Continuation:       true,
+			GenerationControls: chat.ControlTemperature | chat.ControlMaxOutputTokens,
+			Tools:              true,
+			Extensions:         map[string]bool{"x-durable": true},
+		}, WithLifecycle(func(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
+			temp = turn.Request.Controls.Temperature
+			tools = len(turn.Request.Controls.Tools)
+			ext = turn.Request.Controls.Extensions["x-durable"] != nil
+			return life.Accept(ctx, turn)
+		}))
+		body := `{"model":"agent/basic","store":true,"temperature":0.2,"tools":[{"type":"function","name":"ping","parameters":{"type":"object"}}],"x-durable":true,"input":"x"}`
+		rec := postJSON(t, handler, "/responses", body, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NotNil(t, temp)
+		assert.InDelta(t, 0.2, *temp, 1e-9)
+		assert.Equal(t, 1, tools)
+		assert.True(t, ext)
 	})
 
 	t.Run("activity events", func(t *testing.T) {
@@ -326,7 +373,7 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Contains(t, rec.Body.String(), "response.activity.progress")
 		life.mu.Lock()
-		out := life.records["resp_app"].State.Output
+		out := life.records["resp_app"].Response.Output
 		life.mu.Unlock()
 		require.Len(t, out, 1)
 		assert.Equal(t, chat.ItemMessage, out[0].Type)
@@ -344,7 +391,10 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	t.Run("retrieval envelope", func(t *testing.T) {
-		state := chat.State{
+		resp := chat.Response{
+			ID:          "resp_get",
+			Created:     7,
+			Target:      "agent/basic",
 			Status:      chat.StatusFailed,
 			Output:      []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))},
 			Error:       chat.NewAPIError(400, "invalid_request_error", "test_code", "", "public msg"),
@@ -353,7 +403,7 @@ func TestLifecycle(t *testing.T) {
 			Metadata:    map[string]string{"k": "v"},
 			Store:       true,
 		}
-		body, err := ResponsesBody(chat.Request{Target: "agent/basic"}, state, "resp_get", 7)
+		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
 		value := body.(map[string]any)
 		assert.Equal(t, "resp_get", value["id"])
@@ -370,13 +420,16 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	t.Run("failed response retrieval", func(t *testing.T) {
-		state := chat.State{
+		resp := chat.Response{
+			ID:          "resp_fail",
+			Created:     10,
+			Target:      "agent/basic",
 			Status:      chat.StatusFailed,
 			Error:       chat.NewAPIError(503, "server_error", "upstream", "", "service unavailable"),
 			CompletedAt: 123,
 			Store:       true,
 		}
-		body, err := ResponsesBody(chat.Request{Target: "agent/basic"}, state, "resp_fail", 10)
+		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
 		value := body.(map[string]any)
 		assert.Equal(t, "failed", value["status"])
@@ -421,13 +474,16 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	t.Run("incomplete retrieval and replay", func(t *testing.T) {
-		state := chat.State{
+		resp := chat.Response{
+			ID:          "resp_inc",
+			Created:     5,
+			Target:      "agent/basic",
 			Status:      chat.StatusIncomplete,
 			Incomplete:  "max_output_tokens",
 			CompletedAt: 55,
 			Store:       true,
 		}
-		body, err := ResponsesBody(chat.Request{Target: "agent/basic"}, state, "resp_inc", 5)
+		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
 		value := body.(map[string]any)
 		assert.Equal(t, "incomplete", value["status"])
@@ -469,17 +525,17 @@ func TestLifecycle(t *testing.T) {
 		assert.Equal(t, completed, replayBody["completed_at"])
 
 		life.mu.Lock()
-		stored := life.byKey["ts"].state
+		stored := life.byKey["ts"].response
 		life.mu.Unlock()
-		retrieved, err := ResponsesBody(chat.Request{Target: "agent/basic"}, stored, "resp_app", 99)
+		retrieved, err := ResponsesBody(stored)
 		require.NoError(t, err)
 		retBody := retrieved.(map[string]any)
 		assert.EqualValues(t, completed, retBody["completed_at"])
 	})
 
 	t.Run("in progress retrieval", func(t *testing.T) {
-		state := chat.State{Status: chat.StatusInProgress, Store: true}
-		body, err := ResponsesBody(chat.Request{Target: "agent/basic"}, state, "resp_run", 1)
+		resp := chat.Response{ID: "resp_run", Created: 1, Target: "agent/basic", Status: chat.StatusInProgress, Store: true}
+		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
 		value := body.(map[string]any)
 		assert.Equal(t, "in_progress", value["status"])

@@ -30,8 +30,8 @@ type ContinuationStore interface {
 //     detached, bounded cleanup work (for example
 //     context.WithTimeout(context.WithoutCancel(ctx), timeout)).
 //     Not called for Accept errors, completed Replays, or when Finish is nil.
-//     Treat TurnResult.State as read-only: its nested data is shared with the
-//     response encoded after Finish returns. Call State.Clone() before
+//     Treat the Response as read-only: nested data is shared with the
+//     response encoded after Finish returns. Call Response.Clone() before
 //     retaining or modifying it.
 //  5. Advertise success only after Finish succeeds.
 //
@@ -40,24 +40,31 @@ type ContinuationStore interface {
 type Lifecycle func(context.Context, *TurnRequest) (Acceptance, error)
 
 // TurnRequest is the input to Lifecycle.
-// Retention is on Request (Store wire value and Retain effective).
+//
+// Request is the canonical execution request (read-only). Turn is the items
+// submitted in this HTTP request only and is distinguishable from
+// Request.Input (effective history+turn). Retention, continuation, and
+// idempotency are acceptance concerns, not Agent.Run inputs.
 type TurnRequest struct {
-	Request        *Request // Populated Turn, Input, Retain; treat as read-only.
-	IdempotencyKey string   // Idempotency-Key header value, if any.
-	Stream         bool     // Whether the client requested streaming.
+	Request        *Request          // Execution request; treat as read-only.
+	Turn           []Item            // Items submitted in this request only.
+	Previous       *string           // Prior response ID for continuation.
+	Metadata       map[string]string // Application metadata for the response.
+	Store          *bool             // Wire store flag; nil when omitted.
+	Retain         bool              // Effective retention after StoreDefault.
+	IdempotencyKey string            // Idempotency-Key header value, if any.
+	Stream         bool              // Whether the client requested streaming.
 }
 
 // Acceptance is the per-request result of Lifecycle.
 //
-// Finish closes the request-local reservation. It should hold any resources
-// that must be released or persisted for this acceptance (idempotency key,
-// reserved record pointers). Context values from Accept remain available
-// through the execution context passed to Finish; start cleanup deadlines
-// when cleanup begins, not at Accept time.
+// For new work, Response carries identity (ID/Created; empty uses library
+// defaults). For replay, Replay holds the complete stored Response and Run is
+// skipped. Finish closes the request-local reservation and should capture any
+// resources that must be released or persisted (idempotency key, turn items).
 type Acceptance struct {
-	ID      string // Response ID; empty uses a library default.
-	Created int64  // Unix created time; zero uses a library default.
-	Replay  *State // When set, skip Agent.Run and encode this result.
+	Response Response  // Identity for new work; ignored when Replay is set.
+	Replay   *Response // When set, skip Agent.Run and encode this result.
 
 	// RunTimeout controls execution cancellation:
 	//   0  — follow the HTTP request context (cancel on client disconnect)
@@ -71,20 +78,7 @@ type Acceptance struct {
 
 	// Finish is called exactly once after Agent.Run for a new acceptance.
 	// Nil when Replay is set or when no terminal persistence is needed.
-	Finish func(context.Context, *TurnResult) error
-}
-
-// TurnResult is the input to Acceptance.Finish.
-type TurnResult struct {
-	ID      string   // Response ID that was accepted (after library defaults).
-	Created int64    // Creation timestamp used in envelopes.
-	Request *Request // Same request; Turn is the submitted input.
-
-	// State is the client-visible terminal payload. Nested fields (Output,
-	// Usage, Error, Metadata) are shared with the response encoded after
-	// Finish returns. Treat State as read-only; call State.Clone() before
-	// retaining or modifying it.
-	State  State
-	Err    error // Operational execution error, if any.
-	Stream bool  // Whether the client requested streaming.
+	// The Response is read-only and shared with subsequent encoding; Clone
+	// before retaining or modifying. err is the operational execution error.
+	Finish func(context.Context, *Response, error) error
 }

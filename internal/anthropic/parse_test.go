@@ -26,7 +26,7 @@ func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
 func requireAPIError(t *testing.T, err error, code, param string) {
 	t.Helper()
 	require.Error(t, err)
-	apiErr, ok := errors.AsType[*chat.APIError](err)
+	apiErr, ok := errors.AsType[*chat.Error](err)
 	require.True(t, ok, "expected chat.APIError, got %T", err)
 	assert.Equal(t, code, apiErr.Code)
 	if param != "" {
@@ -235,7 +235,7 @@ func TestAdapterValidateEvent(t *testing.T) {
 
 func TestAdapterResponse(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	req := chat.Request{Target: "claude-3"}
 
 	t.Run("textOnly", func(t *testing.T) {
@@ -307,7 +307,7 @@ func TestAdapterResponse(t *testing.T) {
 
 func TestAdapterStream(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	req := chat.Request{Target: "claude-3"}
 	limits := chat.DefaultLimits()
 
@@ -402,7 +402,7 @@ func TestParseRequestExtra(t *testing.T) {
 		"metadata": {
 			body: `{"model":"claude-3","max_tokens":64,"messages":[{"role":"user","content":"x"}],"metadata":{"user_id":"u1"}}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, "u1", parsed.Request.Metadata["user_id"])
+				assert.Equal(t, "u1", parsed.Metadata["user_id"])
 			},
 		},
 		"invalidImageBase64": {
@@ -523,7 +523,7 @@ func TestNewAdapter(t *testing.T) {
 
 func TestAdapterResponseLength(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	result := execution.Result{
 		Items:   []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("truncated"))},
 		Outcome: chat.Outcome{Status: chat.StatusIncomplete, StopReason: chat.StopLength},
@@ -563,7 +563,7 @@ func TestWireDelegates(t *testing.T) {
 
 func TestAdapterStreamMore(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("streamedToolDeltas", func(t *testing.T) {
@@ -703,7 +703,7 @@ func (w *plainResponseWriter) WriteHeader(statusCode int) { w.code = statusCode 
 
 func TestAdapterResponseMore(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	req := chat.Request{Target: "claude-3"}
 
 	t.Run("maxTokens", func(t *testing.T) {
@@ -760,7 +760,7 @@ func TestSSEWrite(t *testing.T) {
 
 func TestAdapterStreamFail(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("beforeStart", func(t *testing.T) {
@@ -790,7 +790,7 @@ func TestAdapterStreamFail(t *testing.T) {
 
 func TestStreamCoverage(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "msg_1", Created: 100, Model: "claude-3"}
+	meta := responseMeta{Response: chat.Response{ID: "msg_1", Created: 100, Target: "claude-3"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("startedAndCompleteOnly", func(t *testing.T) {

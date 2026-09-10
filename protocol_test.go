@@ -118,46 +118,58 @@ func (s *testContinuationStore) put(id string, items []chat.Item) {
 	s.items[id] = cloned
 }
 
+type savedFinish struct {
+	Input    []chat.Item
+	Turn     []chat.Item
+	Response chat.Response
+}
+
 type testLifecycle struct {
 	store   *testContinuationStore
 	fail    bool
 	finals  int
 	accepts int
-	last    *chat.TurnResult
+	last    *savedFinish
 }
 
-func (l *testLifecycle) Accept(_ context.Context, _ *chat.TurnRequest) (chat.Acceptance, error) {
+func (l *testLifecycle) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
 	l.accepts++
+	input := make([]chat.Item, len(turn.Request.Input))
+	for i, item := range turn.Request.Input {
+		input[i] = item.Clone()
+	}
+	turnItems := make([]chat.Item, len(turn.Turn))
+	for i, item := range turn.Turn {
+		turnItems[i] = item.Clone()
+	}
 	return chat.Acceptance{
-		Finish: func(ctx context.Context, result *chat.TurnResult) error {
-			return l.finish(ctx, result)
+		Finish: func(_ context.Context, resp *chat.Response, err error) error {
+			return l.finish(input, turnItems, resp, err)
 		},
 	}, nil
 }
 
-func (l *testLifecycle) finish(_ context.Context, result *chat.TurnResult) error {
+func (l *testLifecycle) finish(input, turnItems []chat.Item, resp *chat.Response, runErr error) error {
 	l.finals++
-	clone := *result
-	if result.Request != nil {
-		req := *result.Request
-		clone.Request = &req
+	l.last = &savedFinish{
+		Input:    input,
+		Turn:     turnItems,
+		Response: resp.Clone(),
 	}
-	clone.State = result.State.Clone()
-	l.last = &clone
 	if l.fail {
 		return errors.New("finalize failed")
 	}
-	if !result.State.Store || l.store == nil {
+	if !resp.Store || l.store == nil {
 		return nil
 	}
-	items := make([]chat.Item, 0, len(result.Request.Input)+len(result.State.Output))
-	for _, item := range result.Request.Input {
+	items := make([]chat.Item, 0, len(input)+len(resp.Output))
+	for _, item := range input {
 		items = append(items, item.Clone())
 	}
-	for _, item := range result.State.Output {
+	for _, item := range resp.Output {
 		items = append(items, item.Clone())
 	}
-	l.store.put(result.ID, items)
+	l.store.put(resp.ID, items)
 	return nil
 }
 
@@ -176,8 +188,8 @@ func TestContinuation(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 1, life.finals)
 	require.NotNil(t, life.last)
-	assert.Len(t, life.last.Request.Input, 1)
-	assert.Len(t, life.last.State.Output, 1)
+	assert.Len(t, life.last.Input, 1)
+	assert.Len(t, life.last.Response.Output, 1)
 
 	second := postJSON(t, handler, "/responses", `{"model":"agent/basic","previous_response_id":"`+responseID+`","input":"second"}`, nil)
 	require.Equal(t, http.StatusOK, second.Code)

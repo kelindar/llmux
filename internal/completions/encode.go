@@ -15,10 +15,10 @@ func (Adapter) Response(req chat.Request, result execution.Result, meta response
 		return nil, err
 	}
 	response := map[string]any{
-		"id":      meta.ID,
+		"id":      meta.Response.ID,
 		"object":  "chat.completion",
-		"created": meta.Created,
-		"model":   meta.Model,
+		"created": meta.Response.Created,
+		"model":   meta.Response.Target,
 		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}},
 	}
 	if result.Outcome.Usage != nil {

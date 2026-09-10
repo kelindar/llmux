@@ -26,7 +26,7 @@ func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
 func requireAPIError(t *testing.T, err error, code, param string) {
 	t.Helper()
 	require.Error(t, err)
-	apiErr, ok := errors.AsType[*chat.APIError](err)
+	apiErr, ok := errors.AsType[*chat.Error](err)
 	require.True(t, ok, "expected chat.APIError, got %T", err)
 	assert.Equal(t, code, apiErr.Code)
 	if param != "" {
@@ -262,7 +262,7 @@ func TestAdapterValidateEvent(t *testing.T) {
 
 func TestAdapterResponse(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	req := chat.Request{Target: "gpt-4"}
 
 	t.Run("textOnly", func(t *testing.T) {
@@ -318,7 +318,7 @@ func TestAdapterResponse(t *testing.T) {
 
 func TestAdapterStream(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	req := chat.Request{Target: "gpt-4"}
 	limits := chat.DefaultLimits()
 
@@ -447,9 +447,9 @@ func TestParseRequestExtra(t *testing.T) {
 		"storeAndMetadata": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"store":true,"metadata":{"k":"v"},"reasoning_effort":"medium"}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				require.NotNil(t, parsed.Request.Store)
-				assert.True(t, *parsed.Request.Store)
-				assert.Equal(t, "v", parsed.Request.Metadata["k"])
+				require.NotNil(t, parsed.Store)
+				assert.True(t, *parsed.Store)
+				assert.Equal(t, "v", parsed.Metadata["k"])
 				require.NotNil(t, parsed.Request.Controls.Reasoning)
 			},
 		},
@@ -597,7 +597,7 @@ func TestAdapterValidateMore(t *testing.T) {
 
 func TestAdapterResponseErrors(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	audio := chat.InlineMedia("audio/wav", []byte{1})
 	audio.Format = "wav"
 	audio2 := chat.InlineMedia("audio/wav", []byte{2})
@@ -612,7 +612,7 @@ func TestAdapterResponseErrors(t *testing.T) {
 
 func TestAdapterResponseAudio(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	audio := chat.InlineMedia("audio/wav", []byte{1, 2, 3})
 	audio.Format = "wav"
 	audio.Ref = "audio_ref"
@@ -673,7 +673,7 @@ func TestWireDelegates(t *testing.T) {
 
 func TestAdapterResponseCombined(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	audio := chat.InlineMedia("audio/wav", []byte{1})
 	audio.Format = "wav"
 	result := execution.Result{
@@ -693,7 +693,7 @@ func TestAdapterResponseCombined(t *testing.T) {
 
 func TestAdapterStreamErrors(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	limits := chat.DefaultLimits()
 	rec := httptest.NewRecorder()
 	stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
@@ -709,7 +709,7 @@ func TestAdapterStreamErrors(t *testing.T) {
 
 func TestAdapterStreamMore(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("completeToolCall", func(t *testing.T) {
@@ -814,7 +814,7 @@ func TestSSEWrite(t *testing.T) {
 
 func TestAdapterStreamFail(t *testing.T) {
 	adapter := Adapter{}
-	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	meta := responseMeta{Response: chat.Response{ID: "chatcmpl-1", Created: 100, Target: "gpt-4"}}
 	limits := chat.DefaultLimits()
 
 	t.Run("beforeStart", func(t *testing.T) {

@@ -42,7 +42,7 @@ func newEventState(limits chat.Limits) *eventState {
 
 func (s *eventState) addBytes(n int64) error {
 	if n < 0 || n > s.maxEvent || s.bytes > s.maxBytes-n {
-		return &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "output_too_large", Message: "agent output exceeds the configured limit"}
+		return &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "output_too_large", Message: "agent output exceeds the configured limit"}
 	}
 	s.bytes += n
 	return nil
@@ -95,7 +95,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 	}
 	if event.Type != chat.EventTextDelta && event.Type != chat.EventTextDone && event.Type != chat.EventToolCallDelta {
 		if data, err := json.Marshal(event); err == nil && int64(len(data)) > s.maxEvent {
-			return nil, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "event_too_large", Message: "agent event exceeds the configured limit"}
+			return nil, &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "event_too_large", Message: "agent event exceeds the configured limit"}
 		}
 	}
 	var normalized []chat.Event

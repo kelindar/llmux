@@ -200,7 +200,7 @@ func TestRun(t *testing.T) {
 				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("too long for event limit"))})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
-				apiErr, ok := errors.AsType[*chat.APIError](err)
+				apiErr, ok := errors.AsType[*chat.Error](err)
 				require.True(t, ok)
 				assert.Equal(t, "event_too_large", apiErr.Code)
 			},
@@ -243,7 +243,7 @@ func TestRun(t *testing.T) {
 				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventTextDelta, Delta: "toolong"})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
-				apiErr, ok := errors.AsType[*chat.APIError](err)
+				apiErr, ok := errors.AsType[*chat.Error](err)
 				require.True(t, ok)
 				assert.Equal(t, "output_too_large", apiErr.Code)
 			},

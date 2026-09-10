@@ -49,7 +49,7 @@ func parseFileMedia(object map[string]jsontext.Value, param string) (chat.Media,
 func audioMIME(format string) string                     { return wire.AudioMIME(format) }
 func outputTextParts(parts []chat.Part) []map[string]any { return wire.OutputTextParts(parts) }
 func mediaDataURL(media chat.Media) (string, error)      { return wire.MediaDataURL(media) }
-func fmtError(param, message string, err error) *chat.APIError {
+func fmtError(param, message string, err error) *chat.Error {
 	return wire.Error(param, message, err)
 }
 func validRole(role chat.Role) bool { return chat.ValidRole(role) }

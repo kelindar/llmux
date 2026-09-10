@@ -37,9 +37,9 @@ func TestLifecycleMinimal(t *testing.T) {
 	defer store.mu.Unlock()
 	require.Len(t, store.byID, 1)
 	for _, got := range store.byID {
-		assert.Equal(t, "agent/basic", got.Target)
+		assert.Equal(t, "agent/basic", got.Response.Target)
 		require.Len(t, got.Turn, 1)
-		require.NotEmpty(t, got.State.Output)
-		assert.Equal(t, "hello", got.State.Output[0].Content[0].Text)
+		require.NotEmpty(t, got.Response.Output)
+		assert.Equal(t, "hello", got.Response.Output[0].Content[0].Text)
 	}
 }

@@ -19,7 +19,7 @@ import (
 func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case h.transcriber == nil:
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "audio transcription is not configured"})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "audio transcription is not configured"})
 		return
 	case !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data;"):
 		writeProtocolError(w, protocolChat, chat.Invalid("content_type", "audio transcription requires multipart/form-data"))
@@ -36,7 +36,7 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 			code = "request_too_large"
 			message = "multipart request exceeds the configured limit"
 		}
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: status, Type: "invalid_request_error", Code: code, Message: message, Err: err})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: status, Type: "invalid_request_error", Code: code, Message: message, Err: err})
 		return
 	}
 	if r.MultipartForm != nil {
@@ -60,11 +60,11 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, h.limits.MaxMediaBytes+1))
 	if err != nil {
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "file_read_failed", Param: "file", Message: "could not read audio file", Err: err})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "file_read_failed", Param: "file", Message: "could not read audio file", Err: err})
 		return
 	}
 	if int64(len(data)) > h.limits.MaxMediaBytes {
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "media_too_large", Param: "file", Message: "audio file exceeds the configured media limit"})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "media_too_large", Param: "file", Message: "audio file exceeds the configured media limit"})
 		return
 	}
 
@@ -165,7 +165,7 @@ func parseFormFloat(r *http.Request, key string) (*float64, error) {
 
 func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	if h.speaker == nil {
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "speech generation is not configured"})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "speech generation is not configured"})
 		return
 	}
 	body, err := h.readBody(w, r, h.limits.MaxRequestBytes)
@@ -191,10 +191,10 @@ func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(result.Data) == 0:
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusInternalServerError, Type: "server_error", Code: "empty_audio", Message: "speech service returned no audio"})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "empty_audio", Message: "speech service returned no audio"})
 		return
 	case int64(len(result.Data)) > h.limits.MaxOutputBytes:
-		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "output_too_large", Message: "speech output exceeds the configured limit"})
+		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "output_too_large", Message: "speech output exceeds the configured limit"})
 		return
 	}
 	if request.StreamFormat == "sse" {

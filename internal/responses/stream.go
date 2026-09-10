@@ -38,10 +38,10 @@ func (s *responsesStream) start() error {
 	if s.started {
 		return nil
 	}
-	state := s.meta.State
+	state := s.meta.Response
 	state.Status = chat.StatusInProgress
 	state.CompletedAt = 0
-	base := responseObject(s.request, *s.meta, state, []any{})
+	base := responseObject(s.request, state, []any{})
 	if err := s.emit("response.created", map[string]any{"response": base}); err != nil {
 		return err
 	}
@@ -306,7 +306,7 @@ func (s *responsesStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 	if err := s.start(); err != nil {
 		return err
 	}
-	state := s.meta.State
+	state := s.meta.Response
 	if state.Status == "" {
 		state.Status = outcome.Status
 	}
@@ -323,7 +323,7 @@ func (s *responsesStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 	case chat.StatusIncomplete:
 		event = "response.incomplete"
 	}
-	if err := s.emit(event, map[string]any{"response": responseObject(s.request, *s.meta, state, output)}); err != nil {
+	if err := s.emit(event, map[string]any{"response": responseObject(s.request, state, output)}); err != nil {
 		return err
 	}
 	return s.writer.done()
@@ -338,16 +338,16 @@ func (s *responsesStream) Fail(err error) error {
 	if startErr := s.start(); startErr != nil {
 		return startErr
 	}
-	state := s.meta.State
+	state := s.meta.Response
 	state.Status = chat.StatusFailed
 	copy := *apiErr
 	copy.Err = nil
 	state.Error = &copy
 	if state.CompletedAt == 0 {
-		state.CompletedAt = s.meta.Created
+		state.CompletedAt = s.meta.Response.Created
 	}
-	s.meta.State = state
-	response := responseObject(s.request, *s.meta, state, []any{})
+	s.meta.Response = state
+	response := responseObject(s.request, state, []any{})
 	if err := s.emit("response.failed", map[string]any{"response": response}); err != nil {
 		return err
 	}

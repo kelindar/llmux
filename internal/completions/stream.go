@@ -32,7 +32,7 @@ func (s *chatStream) Event(event chat.Event) error {
 	if event.Type == chat.EventTextDone || event.Type == chat.EventToolCallDone {
 		return nil
 	}
-	chunk := map[string]any{"id": s.meta.ID, "object": "chat.completion.chunk", "created": s.meta.Created, "model": s.meta.Model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}}
+	chunk := map[string]any{"id": s.meta.Response.ID, "object": "chat.completion.chunk", "created": s.meta.Response.Created, "model": s.meta.Response.Target, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}}
 	if s.includeUsage {
 		chunk["usage"] = nil
 	}
@@ -142,7 +142,7 @@ func (s *chatStream) Event(event chat.Event) error {
 // Complete emits the final chunk and optional usage chunk for the stream.
 func (s *chatStream) Complete(outcome chat.Outcome, items []chat.Item) error {
 	finish := chatFinishReason(outcome, s.hadTool)
-	chunk := map[string]any{"id": s.meta.ID, "object": "chat.completion.chunk", "created": s.meta.Created, "model": s.meta.Model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}}
+	chunk := map[string]any{"id": s.meta.Response.ID, "object": "chat.completion.chunk", "created": s.meta.Response.Created, "model": s.meta.Response.Target, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}}
 	if s.includeUsage {
 		chunk["usage"] = nil
 	}
@@ -150,7 +150,7 @@ func (s *chatStream) Complete(outcome chat.Outcome, items []chat.Item) error {
 		return err
 	}
 	if outcome.Usage != nil && s.includeUsage {
-		usageChunk := map[string]any{"id": s.meta.ID, "object": "chat.completion.chunk", "created": s.meta.Created, "model": s.meta.Model, "choices": []any{}, "usage": chatUsage(outcome.Usage)}
+		usageChunk := map[string]any{"id": s.meta.Response.ID, "object": "chat.completion.chunk", "created": s.meta.Response.Created, "model": s.meta.Response.Target, "choices": []any{}, "usage": chatUsage(outcome.Usage)}
 		if err := s.writer.write("", usageChunk); err != nil {
 			return err
 		}

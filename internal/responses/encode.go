@@ -19,42 +19,44 @@ func (Adapter) Response(req chat.Request, result execution.Result, meta response
 		}
 		output = append(output, value)
 	}
-	state := meta.State
-	if len(state.Output) == 0 {
-		state.Output = result.Items
+	resp := meta.Response
+	if len(resp.Output) == 0 {
+		resp.Output = result.Items
 	}
-	if state.Status == "" {
-		state.Status = result.Outcome.Status
+	if resp.Status == "" {
+		resp.Status = result.Outcome.Status
 	}
-	if state.Usage == nil {
-		state.Usage = result.Outcome.Usage
+	if resp.Usage == nil {
+		resp.Usage = result.Outcome.Usage
 	}
-	return responseObject(req, meta, state, output), nil
+	if resp.Target == "" {
+		resp.Target = req.Target
+	}
+	if resp.Instructions == "" {
+		resp.Instructions = req.Instructions
+	}
+	return responseObject(req, resp, output), nil
 }
 
 // Render builds the same Responses envelope used for creation, replay, and
-// application-owned GET retrieval.
-func Render(req chat.Request, state chat.State, id string, created int64) (any, error) {
-	output := make([]any, 0, len(state.Output))
-	for _, item := range state.Output {
+// application-owned GET retrieval from one Response value.
+func Render(resp chat.Response) (any, error) {
+	output := make([]any, 0, len(resp.Output))
+	for _, item := range resp.Output {
 		value, err := responseItem(item)
 		if err != nil {
 			return nil, err
 		}
 		output = append(output, value)
 	}
-	return responseObject(req, responseMeta{
-		ID:      id,
-		Created: created,
-		Model:   req.Target,
-		State:   state,
-	}, state, output), nil
+	req := chat.Request{Target: resp.Target, Instructions: resp.Instructions}
+	return responseObject(req, resp, output), nil
 }
 
-func responseStatus(state chat.State, outcome chat.Outcome) string {
+func responseStatus(resp chat.Response, outcome chat.Outcome) string {
 	switch {
-	case state.Status != "":
-		return string(state.Status)
+	case resp.Status != "":
+		return string(resp.Status)
 	case outcome.Status != "":
 		return string(outcome.Status)
 	default:
@@ -62,22 +64,26 @@ func responseStatus(state chat.State, outcome chat.Outcome) string {
 	}
 }
 
-func responseObject(req chat.Request, meta responseMeta, state chat.State, output []any) map[string]any {
-	status := responseStatus(state, chat.Outcome{})
+func responseObject(req chat.Request, resp chat.Response, output []any) map[string]any {
+	status := responseStatus(resp, chat.Outcome{})
+	model := resp.Target
+	if model == "" {
+		model = req.Target
+	}
 	value := map[string]any{
-		"id":                   meta.ID,
+		"id":                   resp.ID,
 		"object":               "response",
-		"created_at":           meta.Created,
+		"created_at":           resp.Created,
 		"status":               status,
 		"error":                nil,
 		"incomplete_details":   nil,
 		"instructions":         nil,
-		"model":                meta.Model,
+		"model":                model,
 		"output":               output,
 		"parallel_tool_calls":  true,
 		"previous_response_id": nil,
 		"reasoning":            map[string]any{"effort": nil, "summary": nil},
-		"store":                state.Store,
+		"store":                resp.Store,
 		"temperature":          nil,
 		"text":                 map[string]any{"format": map[string]any{"type": "text"}},
 		"tool_choice":          "auto",
@@ -85,20 +91,24 @@ func responseObject(req chat.Request, meta responseMeta, state chat.State, outpu
 		"top_p":                nil,
 		"metadata":             map[string]string{},
 	}
-	if state.CompletedAt > 0 {
-		value["completed_at"] = state.CompletedAt
+	if resp.CompletedAt > 0 {
+		value["completed_at"] = resp.CompletedAt
 	}
-	if state.Error != nil {
-		value["error"] = map[string]any{"type": state.Error.Code, "code": state.Error.Code, "message": state.Error.Message}
+	if resp.Error != nil {
+		value["error"] = map[string]any{"type": resp.Error.Code, "code": resp.Error.Code, "message": resp.Error.Message}
 	}
-	if state.Incomplete != "" {
-		value["incomplete_details"] = map[string]any{"reason": state.Incomplete}
+	if resp.Incomplete != "" {
+		value["incomplete_details"] = map[string]any{"reason": resp.Incomplete}
 	}
-	if len(state.Metadata) > 0 {
-		value["metadata"] = state.Metadata
+	if len(resp.Metadata) > 0 {
+		value["metadata"] = resp.Metadata
 	}
-	if req.Instructions != "" {
-		value["instructions"] = req.Instructions
+	instructions := resp.Instructions
+	if instructions == "" {
+		instructions = req.Instructions
+	}
+	if instructions != "" {
+		value["instructions"] = instructions
 	}
 	if req.Controls.MaxOutputTokens != nil {
 		value["max_output_tokens"] = *req.Controls.MaxOutputTokens
@@ -114,8 +124,8 @@ func responseObject(req chat.Request, meta responseMeta, state chat.State, outpu
 	if req.Controls.ParallelToolCall != nil {
 		value["parallel_tool_calls"] = *req.Controls.ParallelToolCall
 	}
-	if req.Previous != nil {
-		value["previous_response_id"] = *req.Previous
+	if resp.Previous != nil {
+		value["previous_response_id"] = *resp.Previous
 	}
 	switch req.Output.Format.Kind {
 	case chat.FormatJSONSchema:
@@ -145,8 +155,8 @@ func responseObject(req chat.Request, meta responseMeta, state chat.State, outpu
 			value["tool_choice"] = req.Controls.ToolChoice.Mode
 		}
 	}
-	if state.Usage != nil {
-		value["usage"] = responseUsage(state.Usage)
+	if resp.Usage != nil {
+		value["usage"] = responseUsage(resp.Usage)
 	}
 	return value
 }

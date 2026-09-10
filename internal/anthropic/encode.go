@@ -14,10 +14,10 @@ func (Adapter) Response(req chat.Request, result execution.Result, meta response
 		return nil, err
 	}
 	value := map[string]any{
-		"id":            meta.ID,
+		"id":            meta.Response.ID,
 		"type":          "message",
 		"role":          "assistant",
-		"model":         meta.Model,
+		"model":         meta.Response.Target,
 		"content":       content,
 		"stop_reason":   anthropicStopReason(result.Outcome, tools),
 		"stop_sequence": nil,

@@ -37,7 +37,7 @@ func rawArray(raw jsontext.Value, param string) ([]jsontext.Value, error) {
 func requireString(object map[string]jsontext.Value, key string) (string, error) {
 	return wire.RequireString(object, key)
 }
-func fmtError(param, message string, err error) *chat.APIError {
+func fmtError(param, message string, err error) *chat.Error {
 	return wire.Error(param, message, err)
 }
 func validRole(role chat.Role) bool { return chat.ValidRole(role) }
@@ -99,8 +99,8 @@ func (s *sseWriter) done() error {
 	return nil
 }
 
-func asAPIError(err error) *chat.APIError { return internalprotocol.AsAPIError(err) }
-func anthropicErrorType(err *chat.APIError) string {
+func asAPIError(err error) *chat.Error { return internalprotocol.AsAPIError(err) }
+func anthropicErrorType(err *chat.Error) string {
 	return internalprotocol.AnthropicErrorType(err)
 }
 func writeProtocolErrorAndReturn(w http.ResponseWriter, p protocol, err error) error {

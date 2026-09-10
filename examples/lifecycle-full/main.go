@@ -29,8 +29,8 @@ func main() {
 	store := newStore()
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		text := "turn"
-		if len(req.Turn) > 0 && len(req.Turn[0].Content) > 0 {
-			text = req.Turn[0].Content[0].Text
+		if len(req.Input) > 0 && len(req.Input[len(req.Input)-1].Content) > 0 {
+			text = req.Input[len(req.Input)-1].Content[0].Text
 		}
 		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
@@ -54,7 +54,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		body, err := llmux.ResponsesBody(rec.renderRequest(), rec.State, rec.ID, rec.Created)
+		body, err := llmux.ResponsesBody(rec.Response)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -71,22 +71,8 @@ func main() {
 
 // turnRecord keeps only turn-local data needed for continuation and retrieval.
 type turnRecord struct {
-	ID           string
-	Created      int64
-	Parent       string
-	Target       string
-	Instructions string
-	Turn         []chat.Item
-	State        chat.State
-}
-
-func (r turnRecord) renderRequest() chat.Request {
-	req := chat.Request{Target: r.Target, Instructions: r.Instructions}
-	if r.Parent != "" {
-		parent := r.Parent
-		req.Previous = &parent
-	}
-	return req
+	Response chat.Response
+	Turn     []chat.Item
 }
 
 type store struct {
@@ -115,10 +101,10 @@ func (s *store) Load(_ context.Context, id string) ([]chat.Item, error) {
 	var chain []turnRecord
 	for cur := rec; ; {
 		chain = append(chain, cur)
-		if cur.Parent == "" {
+		if cur.Response.Previous == nil || *cur.Response.Previous == "" {
 			break
 		}
-		parent, ok := s.byID[cur.Parent]
+		parent, ok := s.byID[*cur.Response.Previous]
 		if !ok {
 			return nil, errors.New("broken parent chain")
 		}
@@ -127,7 +113,7 @@ func (s *store) Load(_ context.Context, id string) ([]chat.Item, error) {
 	var items []chat.Item
 	for _, c := range slices.Backward(chain) {
 		items = append(items, cloneItems(c.Turn)...)
-		items = append(items, cloneItems(c.State.Output)...)
+		items = append(items, cloneItems(c.Response.Output)...)
 	}
 	return items, nil
 }
@@ -137,16 +123,16 @@ func (s *store) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptan
 	defer s.mu.Unlock()
 
 	switch {
-	case turn.Request.Store != nil && !*turn.Request.Store:
+	case turn.Store != nil && !*turn.Store:
 		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
-	case !turn.Request.Retain:
+	case !turn.Retain:
 		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
 	}
 
 	key := turn.IdempotencyKey
 	if key != "" {
 		if s.running[key] {
-			return chat.Acceptance{}, &chat.APIError{
+			return chat.Acceptance{}, &chat.Error{
 				Status:  http.StatusConflict,
 				Type:    "invalid_request_error",
 				Code:    "request_in_progress",
@@ -155,34 +141,24 @@ func (s *store) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptan
 		}
 		if id, ok := s.byKey[key]; ok {
 			rec := s.byID[id]
-			state := rec.State.Clone()
-			return chat.Acceptance{
-				ID:      rec.ID,
-				Created: rec.Created,
-				Replay:  &state,
-			}, nil
+			replay := rec.Response.Clone()
+			return chat.Acceptance{Replay: &replay}, nil
 		}
 		s.running[key] = true
 	}
 
 	n := s.seq.Add(1)
 	id := "resp_" + strconv.FormatInt(n, 10)
-	acc := chat.Acceptance{ID: id, Created: n}
+	acc := chat.Acceptance{Response: chat.Response{ID: id, Created: n}}
 
 	// Durable execution (opt-in): llmux detaches client cancel and applies the timeout.
 	if turn.Request.Controls.Extensions["x-durable"] != nil {
 		acc.RunTimeout = 30 * time.Second
 	}
 
-	parent := ""
-	if turn.Request.Previous != nil {
-		parent = *turn.Request.Previous
-	}
-	target := turn.Request.Target
-	instructions := turn.Request.Instructions
-	turnItems := cloneItems(turn.Request.Turn)
+	turnItems := cloneItems(turn.Turn)
 
-	acc.Finish = func(ctx context.Context, result *chat.TurnResult) error {
+	acc.Finish = func(ctx context.Context, resp *chat.Response, _ error) error {
 		ctx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		defer stop()
 
@@ -191,20 +167,15 @@ func (s *store) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptan
 		if key != "" {
 			delete(s.running, key)
 		}
-		if !result.State.Store {
+		if !resp.Store {
 			return nil
 		}
-		s.byID[result.ID] = turnRecord{
-			ID:           result.ID,
-			Created:      result.Created,
-			Parent:       parent,
-			Target:       target,
-			Instructions: instructions,
-			Turn:         turnItems,
-			State:        result.State.Clone(),
+		s.byID[resp.ID] = turnRecord{
+			Response: resp.Clone(),
+			Turn:     turnItems,
 		}
 		if key != "" {
-			s.byKey[key] = result.ID
+			s.byKey[key] = resp.ID
 		}
 		_ = ctx
 		return nil

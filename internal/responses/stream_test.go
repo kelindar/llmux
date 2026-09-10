@@ -11,7 +11,7 @@ import (
 
 func TestStreamStart(t *testing.T) {
 	rec := httptest.NewRecorder()
-	meta := responseMeta{ID: "r1", Created: 1, Model: "m"}
+	meta := responseMeta{Response: chat.Response{ID: "r1", Created: 1, Target: "m"}}
 	stream := Adapter{}.Stream(rec, parsedRequest{}, &meta, chat.DefaultLimits())
 	require.NoError(t, stream.Event(chat.Text("hi")))
 	require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))}))

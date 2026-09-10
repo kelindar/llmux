@@ -13,7 +13,7 @@ func TestEncodeResponse(t *testing.T) {
 	body, err := Adapter{}.Response(chat.Request{Target: "m"}, execution.Result{
 		Items:   []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))},
 		Outcome: chat.Outcome{Status: chat.StatusCompleted},
-	}, responseMeta{ID: "id", Model: "m"})
+	}, responseMeta{Response: chat.Response{ID: "id", Target: "m"}})
 	require.NoError(t, err)
 	assert.Equal(t, "message", body.(map[string]any)["type"])
 }

@@ -196,7 +196,14 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 	} else if value != nil {
 		stream = *value
 	}
-	return parsedRequest{Kind: protocolChat, Request: chat.Request{Target: target, Input: input, Controls: controls, Output: output, Store: store, Metadata: metadata}, Stream: stream, IncludeUsage: includeUsage}, nil
+	return parsedRequest{
+		Kind:         protocolChat,
+		Request:      chat.Request{Target: target, Input: input, Controls: controls, Output: output},
+		Store:        store,
+		Metadata:     metadata,
+		Stream:       stream,
+		IncludeUsage: includeUsage,
+	}, nil
 }
 
 func parseChatMessage(raw jsontext.Value) ([]chat.Item, error) {

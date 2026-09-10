@@ -126,7 +126,12 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 	} else if value != nil {
 		stream = *value
 	}
-	return parsedRequest{Kind: protocolAnthropic, Request: chat.Request{Target: target, Instructions: instructions, Input: input, Controls: controls, Output: chat.OutputSpec{Modalities: chat.ModalityText}, Metadata: metadata}, Stream: stream}, nil
+	return parsedRequest{
+		Kind:     protocolAnthropic,
+		Request:  chat.Request{Target: target, Instructions: instructions, Input: input, Controls: controls, Output: chat.OutputSpec{Modalities: chat.ModalityText}},
+		Metadata: metadata,
+		Stream:   stream,
+	}, nil
 }
 
 func parseAnthropicMessage(raw jsontext.Value) ([]chat.Item, error) {

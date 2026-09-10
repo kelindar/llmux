@@ -91,8 +91,8 @@ func DecodeStringSlice(object map[string]jsontext.Value, key string) ([]string, 
 }
 
 // Error builds an invalid_request_error chat.APIError for param with cause attached.
-func Error(param, message string, cause error) *chat.APIError {
-	return &chat.APIError{
+func Error(param, message string, cause error) *chat.Error {
+	return &chat.Error{
 		Status:  http.StatusBadRequest,
 		Type:    "invalid_request_error",
 		Code:    "invalid_request",
