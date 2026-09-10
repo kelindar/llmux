@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,52 +52,52 @@ func TestParseSpeechVoice(t *testing.T) {
 }
 
 func TestSpeechNotConfigured(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{})
-	recorder := postJSON(t, handler, "/v1/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{})
+	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	assert.Equal(t, "not_found", responseError(t, recorder)["code"])
 }
 
 func TestTranscriptionNotConfigured(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{})
-	recorder := postRaw(t, handler, "/v1/audio/transcriptions", []byte("x"), "application/json", nil)
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{})
+	recorder := postRaw(t, handler, "/audio/transcriptions", []byte("x"), "application/json", nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
 
 func TestTranscriptionContentType(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
-	recorder := postRaw(t, handler, "/v1/audio/transcriptions", []byte("x"), "application/json", nil)
+	recorder := postRaw(t, handler, "/audio/transcriptions", []byte("x"), "application/json", nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "invalid_request", responseError(t, recorder)["code"])
 }
 
 func TestTranscriptionMissingFields(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	require.NoError(t, writer.Close())
-	recorder := postRaw(t, handler, "/v1/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
+	recorder := postRaw(t, handler, "/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "file", responseError(t, recorder)["param"])
 }
 
 func TestTranscriptionUnsupportedField(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 	var body bytes.Buffer
@@ -108,15 +109,15 @@ func TestTranscriptionUnsupportedField(t *testing.T) {
 	_, err = file.Write([]byte("audio"))
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	recorder := postRaw(t, handler, "/v1/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
+	recorder := postRaw(t, handler, "/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
 }
 
 func TestTranscriptionFormats(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
 		return Transcription{Text: "hello"}, nil
 	})))
 
@@ -140,9 +141,9 @@ func TestTranscriptionFormats(t *testing.T) {
 }
 
 func TestTranscriptionDuplicateFile(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 	var body bytes.Buffer
@@ -157,24 +158,24 @@ func TestTranscriptionDuplicateFile(t *testing.T) {
 	_, err = fileB.Write([]byte("audio"))
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	recorder := postRaw(t, handler, "/v1/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
+	recorder := postRaw(t, handler, "/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
 
 func TestTranscriptionFailure(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
-		return Transcription{}, Invalid("file", "bad audio")
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+		return Transcription{}, chat.Invalid("file", "bad audio")
 	})))
 	recorder := postTranscription(t, handler, map[string]string{"model": "whisper"})
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
 
 func TestTranscriptionTemperature(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 
@@ -186,9 +187,9 @@ func TestTranscriptionTemperature(t *testing.T) {
 }
 
 func TestSpeechValidation(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 		return Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
 	})))
 
@@ -204,70 +205,70 @@ func TestSpeechValidation(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			recorder := postJSON(t, handler, "/v1/audio/speech", test.body, nil)
+			recorder := postJSON(t, handler, "/audio/speech", test.body, nil)
 			assert.Equal(t, http.StatusBadRequest, recorder.Code)
 		})
 	}
 }
 
 func TestSpeechObjectVoice(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithSpeaker(SpeakerFunc(func(_ context.Context, req SpeechRequest) (Speech, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(_ context.Context, req SpeechRequest) (Speech, error) {
 		assert.Equal(t, "custom", req.Voice)
 		return Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
 	})))
-	recorder := postJSON(t, handler, "/v1/audio/speech", `{"model":"tts","input":"hi","voice":{"id":"custom"}}`, nil)
+	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":{"id":"custom"}}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
 func TestSpeechBinaryResponse(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 		return Speech{Data: []byte("audio"), Format: "wav"}, nil
 	})))
-	recorder := postJSON(t, handler, "/v1/audio/speech", `{"model":"tts","input":"hi","voice":"alloy","response_format":"wav"}`, nil)
+	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy","response_format":"wav"}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Equal(t, "audio/wav", recorder.Header().Get("Content-Type"))
 }
 
 func TestSpeechErrors(t *testing.T) {
 	t.Run("empty audio", func(t *testing.T) {
-		handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-			return Outcome{}, nil
-		}), Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 			return Speech{}, nil
 		})))
-		recorder := postJSON(t, handler, "/v1/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
+		recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
 		require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	})
 
 	t.Run("speaker failure", func(t *testing.T) {
 		var logged error
-		handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-			return Outcome{}, nil
-		}), Capabilities{},
+		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}), chat.Capabilities{},
 			WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 				return Speech{}, errors.New("speaker down")
 			})),
 			WithErrorLog(func(_ context.Context, err error) { logged = err }),
 		)
-		recorder := postJSON(t, handler, "/v1/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
+		recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
 		require.NotEqual(t, http.StatusOK, recorder.Code)
 		require.Error(t, logged)
 	})
 
 	t.Run("output too large", func(t *testing.T) {
-		handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-			return Outcome{}, nil
-		}), Capabilities{},
+		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}), chat.Capabilities{},
 			WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 				return Speech{Data: []byte("0123456789")}, nil
 			})),
-			WithLimits(Limits{MaxOutputBytes: 4}),
+			WithLimits(chat.Limits{MaxOutputBytes: 4}),
 		)
-		recorder := postJSON(t, handler, "/v1/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
+		recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
 		require.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code)
 	})
 }
@@ -284,5 +285,5 @@ func postTranscription(t *testing.T, handler http.Handler, fields map[string]str
 	_, err = file.Write([]byte("audio"))
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	return postRaw(t, handler, "/v1/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
+	return postRaw(t, handler, "/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
 }

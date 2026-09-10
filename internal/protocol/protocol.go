@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/kelindar/llmux/contract"
+	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
 )
 
@@ -24,26 +24,26 @@ const (
 
 // ParsedRequest is the protocol-neutral request produced by a wire decoder.
 type ParsedRequest struct {
-	Kind    Kind             // wire protocol that parsed the request
-	Request contract.Request // canonical request payload
-	Stream  bool             // whether the client requested streaming
+	Kind    Kind         // wire protocol that parsed the request
+	Request chat.Request // canonical request payload
+	Stream  bool         // whether the client requested streaming
 }
 
 // Meta contains response identity shared by all protocol encoders.
 type Meta struct {
-	ID       string                 // response identifier assigned by the server or Lifecycle
-	Created  int64                  // Unix timestamp when the response was created
-	Model    string                 // resolved model name echoed to the client
-	Activity bool                   // when true, Responses may encode EventActivity frames
-	State    contract.ResponseState // client-visible status, error, metadata, and store
+	ID       string             // response identifier assigned by the server or Lifecycle
+	Created  int64              // Unix timestamp when the response was created
+	Model    string             // resolved model name echoed to the client
+	Activity bool               // when true, Responses may encode EventActivity frames
+	State    chat.ResponseState // client-visible status, error, metadata, and store
 }
 
 // StreamEncoder turns canonical events into one protocol's SSE lifecycle.
 type StreamEncoder interface {
 	// Event encodes one canonical agent event into protocol SSE frames.
-	Event(contract.Event) error
+	Event(chat.Event) error
 	// Complete emits terminal stream events and closes the SSE lifecycle.
-	Complete(contract.Outcome, []contract.Item) error
+	Complete(chat.Outcome, []chat.Item) error
 	// Fail writes a protocol-specific error response for the stream.
 	Fail(error) error
 	// Started reports whether SSE output has begun.
@@ -53,13 +53,13 @@ type StreamEncoder interface {
 // Adapter is the protocol-specific boundary used by the HTTP handler.
 type Adapter interface {
 	// ValidateEvent checks whether event can be encoded for this protocol.
-	ValidateEvent(contract.Event) error
+	ValidateEvent(chat.Event) error
 	// Response builds a non-streaming response body for result.
-	Response(contract.Request, execution.Result, Meta) (any, error)
+	Response(chat.Request, execution.Result, Meta) (any, error)
 	// Stream returns an SSE encoder for the given response writer.
 	// meta is retained for the stream lifetime so terminal ResponseState
 	// updates are visible to Complete.
-	Stream(http.ResponseWriter, contract.Request, *Meta, contract.Limits) StreamEncoder
+	Stream(http.ResponseWriter, chat.Request, *Meta, chat.Limits) StreamEncoder
 }
 
 // SSEWriter owns the shared HTTP/SSE mechanics. Protocol codecs only provide
@@ -67,12 +67,12 @@ type Adapter interface {
 // flushing, and the OpenAI terminal marker.
 type SSEWriter struct {
 	w       http.ResponseWriter
-	limits  contract.Limits
+	limits  chat.Limits
 	started bool
 }
 
 // NewSSEWriter constructs an SSEWriter for the given response writer and limits.
-func NewSSEWriter(w http.ResponseWriter, limits contract.Limits) *SSEWriter {
+func NewSSEWriter(w http.ResponseWriter, limits chat.Limits) *SSEWriter {
 	return &SSEWriter{w: w, limits: limits}
 }
 
@@ -100,17 +100,17 @@ func (s *SSEWriter) Write(event string, value any) error {
 		return err
 	}
 	if int64(len(data)) > s.limits.MaxEventBytes {
-		return contract.NewAPIError(http.StatusRequestEntityTooLarge, "invalid_request_error", "event_too_large", "", "stream event exceeds the configured limit")
+		return chat.NewAPIError(http.StatusRequestEntityTooLarge, "invalid_request_error", "event_too_large", "", "stream event exceeds the configured limit")
 	}
 	if err := s.Start(); err != nil {
 		return err
 	}
 	if event != "" {
 		if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", event, data); err != nil {
-			return fmt.Errorf("%w: %v", contract.ErrDelivery, err)
+			return fmt.Errorf("%w: %v", chat.ErrDelivery, err)
 		}
 	} else if _, err := fmt.Fprintf(s.w, "data: %s\n\n", data); err != nil {
-		return fmt.Errorf("%w: %v", contract.ErrDelivery, err)
+		return fmt.Errorf("%w: %v", chat.ErrDelivery, err)
 	}
 	s.w.(http.Flusher).Flush()
 	return nil
@@ -124,7 +124,7 @@ func (s *SSEWriter) Done() error {
 		return err
 	}
 	if _, err := fmt.Fprint(s.w, "data: [DONE]\n\n"); err != nil {
-		return fmt.Errorf("%w: %v", contract.ErrDelivery, err)
+		return fmt.Errorf("%w: %v", chat.ErrDelivery, err)
 	}
 	s.w.(http.Flusher).Flush()
 	return nil
@@ -159,12 +159,12 @@ func WriteError(w http.ResponseWriter, kind Kind, err error) {
 	WriteJSON(w, apiErr.Status, body)
 }
 
-// AsAPIError normalizes err into a contract.APIError with safe defaults.
-func AsAPIError(err error) *contract.APIError {
+// AsAPIError normalizes err into a chat.APIError with safe defaults.
+func AsAPIError(err error) *chat.APIError {
 	if err == nil {
-		return contract.NewAPIError(http.StatusInternalServerError, "server_error", "server_error", "", "internal server error")
+		return chat.NewAPIError(http.StatusInternalServerError, "server_error", "server_error", "", "internal server error")
 	}
-	if apiErr, ok := errors.AsType[*contract.APIError](err); ok {
+	if apiErr, ok := errors.AsType[*chat.APIError](err); ok {
 		copy := *apiErr
 		if copy.Status < http.StatusBadRequest || copy.Status > 599 {
 			copy.Status = http.StatusInternalServerError
@@ -180,11 +180,11 @@ func AsAPIError(err error) *contract.APIError {
 		}
 		return &copy
 	}
-	return &contract.APIError{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}
+	return &chat.APIError{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}
 }
 
 // AnthropicErrorType maps a canonical API error to an Anthropic error type string.
-func AnthropicErrorType(err *contract.APIError) string {
+func AnthropicErrorType(err *chat.APIError) string {
 	switch err.Type {
 	case "invalid_request_error", "authentication_error", "permission_error", "not_found_error", "rate_limit_error", "api_error", "overloaded_error":
 		return err.Type

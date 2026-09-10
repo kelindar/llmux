@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/kelindar/llmux/contract"
+	"github.com/kelindar/llmux/chat"
 )
 
 // DecodeObject decodes exactly one JSON object. encoding/json/v2 rejects
@@ -33,7 +33,7 @@ func DecodeString(object map[string]jsontext.Value, key string) (string, bool, e
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", true, contract.Invalid(key, "must be a string")
+		return "", true, chat.Invalid(key, "must be a string")
 	}
 	return value, true, nil
 }
@@ -46,7 +46,7 @@ func DecodeBool(object map[string]jsontext.Value, key string) (*bool, error) {
 	}
 	var value bool
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, contract.Invalid(key, "must be a boolean")
+		return nil, chat.Invalid(key, "must be a boolean")
 	}
 	return &value, nil
 }
@@ -59,7 +59,7 @@ func DecodeInt(object map[string]jsontext.Value, key string) (*int, error) {
 	}
 	var value int
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, contract.Invalid(key, "must be an integer")
+		return nil, chat.Invalid(key, "must be an integer")
 	}
 	return &value, nil
 }
@@ -72,7 +72,7 @@ func DecodeFloat(object map[string]jsontext.Value, key string) (*float64, error)
 	}
 	var value float64
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, contract.Invalid(key, "must be a number")
+		return nil, chat.Invalid(key, "must be a number")
 	}
 	return &value, nil
 }
@@ -85,14 +85,14 @@ func DecodeStringSlice(object map[string]jsontext.Value, key string) ([]string, 
 	}
 	var values []string
 	if err := json.Unmarshal(raw, &values); err != nil {
-		return nil, contract.Invalid(key, "must be an array of strings")
+		return nil, chat.Invalid(key, "must be an array of strings")
 	}
 	return values, nil
 }
 
-// Error builds an invalid_request_error contract.APIError for param with cause attached.
-func Error(param, message string, cause error) *contract.APIError {
-	return &contract.APIError{
+// Error builds an invalid_request_error chat.APIError for param with cause attached.
+func Error(param, message string, cause error) *chat.APIError {
+	return &chat.APIError{
 		Status:  http.StatusBadRequest,
 		Type:    "invalid_request_error",
 		Code:    "invalid_request",
@@ -108,7 +108,7 @@ func RejectUnknown(object map[string]jsontext.Value, allowed map[string]bool) er
 		if allowed[key] || strings.HasPrefix(key, "x-") || strings.Contains(key, ":") {
 			continue
 		}
-		return contract.Unsupported(key, "request field is not supported by llmux")
+		return chat.Unsupported(key, "request field is not supported by llmux")
 	}
 	return nil
 }
@@ -117,7 +117,7 @@ func RejectUnknown(object map[string]jsontext.Value, allowed map[string]bool) er
 func RejectUnknownStrict(object map[string]jsontext.Value, allowed map[string]bool) error {
 	for key := range object {
 		if !allowed[key] {
-			return contract.Unsupported(key, "request field is not supported by llmux")
+			return chat.Unsupported(key, "request field is not supported by llmux")
 		}
 	}
 	return nil
@@ -142,7 +142,7 @@ func NamespacedExtensions(object map[string]jsontext.Value, allowed map[string]b
 func RawObject(raw jsontext.Value, param string) (map[string]jsontext.Value, error) {
 	value, err := DecodeObject(raw)
 	if err != nil {
-		return nil, contract.Invalid(param, "must be a JSON object")
+		return nil, chat.Invalid(param, "must be a JSON object")
 	}
 	return value, nil
 }
@@ -151,7 +151,7 @@ func RawObject(raw jsontext.Value, param string) (map[string]jsontext.Value, err
 func RawArray(raw jsontext.Value, param string) ([]jsontext.Value, error) {
 	var values []jsontext.Value
 	if err := json.Unmarshal(raw, &values); err != nil {
-		return nil, contract.Invalid(param, "must be a JSON array")
+		return nil, chat.Invalid(param, "must be a JSON array")
 	}
 	return values, nil
 }
@@ -163,32 +163,32 @@ func RequireString(object map[string]jsontext.Value, key string) (string, error)
 		return "", err
 	}
 	if !ok || strings.TrimSpace(value) == "" {
-		return "", contract.Invalid(key, key+" is required")
+		return "", chat.Invalid(key, key+" is required")
 	}
 	return value, nil
 }
 
-// ParseMediaURL parses an HTTP(S) URL or data URL into contract.Media.
-func ParseMediaURL(value, detail string) (contract.Media, error) {
+// ParseMediaURL parses an HTTP(S) URL or data URL into chat.Media.
+func ParseMediaURL(value, detail string) (chat.Media, error) {
 	switch {
 	case value == "":
-		return contract.Media{}, errors.New("media URL is empty")
+		return chat.Media{}, errors.New("media URL is empty")
 	case strings.HasPrefix(value, "data:"):
 		return ParseDataURL(value)
 	}
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return contract.Media{}, errors.New("media URL must be an absolute HTTP or HTTPS URL")
+		return chat.Media{}, errors.New("media URL must be an absolute HTTP or HTTPS URL")
 	}
-	return contract.Media{URL: value}, nil
+	return chat.Media{URL: value}, nil
 }
 
-// ParseDataURL decodes a base64 data URL into inline contract.Media.
-func ParseDataURL(value string) (contract.Media, error) {
+// ParseDataURL decodes a base64 data URL into inline chat.Media.
+func ParseDataURL(value string) (chat.Media, error) {
 	meta, encoded, ok := strings.Cut(value, ",")
 	switch {
 	case !ok, !strings.HasPrefix(meta, "data:"):
-		return contract.Media{}, errors.New("invalid data URL")
+		return chat.Media{}, errors.New("invalid data URL")
 	}
 	meta = strings.TrimPrefix(meta, "data:")
 	mime := ""
@@ -200,35 +200,35 @@ func ParseDataURL(value string) (contract.Media, error) {
 		meta = ""
 	}
 	if !strings.EqualFold(meta, "base64") {
-		return contract.Media{}, errors.New("data URL must use base64 encoding")
+		return chat.Media{}, errors.New("data URL must use base64 encoding")
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return contract.Media{}, errors.New("data URL contains invalid base64")
+		return chat.Media{}, errors.New("data URL contains invalid base64")
 	}
-	return contract.InlineMedia(mime, data), nil
+	return chat.InlineMedia(mime, data), nil
 }
 
 // ParseStringOrContent accepts either a plain string or structured content via parser.
-func ParseStringOrContent(raw jsontext.Value, param string, parser func(jsontext.Value) ([]contract.Part, error)) ([]contract.Part, error) {
+func ParseStringOrContent(raw jsontext.Value, param string, parser func(jsontext.Value) ([]chat.Part, error)) ([]chat.Part, error) {
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return []contract.Part{contract.TextPart(text)}, nil
+		return []chat.Part{chat.TextPart(text)}, nil
 	}
 	return parser(raw)
 }
 
 // ParseChatContent parses OpenAI Chat Completions message content into parts.
-func ParseChatContent(raw jsontext.Value) ([]contract.Part, error) {
+func ParseChatContent(raw jsontext.Value) ([]chat.Part, error) {
 	if string(raw) == "null" || len(raw) == 0 {
 		return nil, nil
 	}
-	return ParseStringOrContent(raw, "messages.content", func(value jsontext.Value) ([]contract.Part, error) {
+	return ParseStringOrContent(raw, "messages.content", func(value jsontext.Value) ([]chat.Part, error) {
 		parts, err := RawArray(value, "messages.content")
 		if err != nil {
 			return nil, err
 		}
-		out := make([]contract.Part, 0, len(parts))
+		out := make([]chat.Part, 0, len(parts))
 		for _, rawPart := range parts {
 			object, err := RawObject(rawPart, "messages.content")
 			if err != nil {
@@ -247,7 +247,7 @@ func ParseChatContent(raw jsontext.Value) ([]contract.Part, error) {
 				if err != nil {
 					return nil, err
 				}
-				out = append(out, contract.TextPart(text))
+				out = append(out, chat.TextPart(text))
 			case "image_url":
 				if err := RejectUnknownStrict(object, map[string]bool{"type": true, "image_url": true}); err != nil {
 					return nil, err
@@ -274,9 +274,9 @@ func ParseChatContent(raw jsontext.Value) ([]contract.Part, error) {
 				}
 				media, err := ParseMediaURL(imageURL, detail)
 				if err != nil {
-					return nil, contract.Invalid("messages.content.image_url.url", err.Error())
+					return nil, chat.Invalid("messages.content.image_url.url", err.Error())
 				}
-				out = append(out, contract.Part{Type: contract.PartImage, Media: &media, Detail: detail})
+				out = append(out, chat.Part{Type: chat.PartImage, Media: &media, Detail: detail})
 			case "input_audio":
 				if err := RejectUnknownStrict(object, map[string]bool{"type": true, "input_audio": true}); err != nil {
 					return nil, err
@@ -294,18 +294,18 @@ func ParseChatContent(raw jsontext.Value) ([]contract.Part, error) {
 				}
 				data, err := base64.StdEncoding.DecodeString(encoded)
 				if err != nil {
-					return nil, contract.Invalid("messages.content.input_audio.data", "must be valid base64")
+					return nil, chat.Invalid("messages.content.input_audio.data", "must be valid base64")
 				}
 				format, err := RequireString(audioObject, "format")
 				if err != nil {
 					return nil, err
 				}
 				if format != "wav" && format != "mp3" {
-					return nil, contract.Unsupported("messages.content.input_audio.format", "only wav and mp3 audio input are supported")
+					return nil, chat.Unsupported("messages.content.input_audio.format", "only wav and mp3 audio input are supported")
 				}
-				media := contract.InlineMedia(AudioMIME(format), data)
+				media := chat.InlineMedia(AudioMIME(format), data)
 				media.Format = format
-				out = append(out, contract.AudioPart(media))
+				out = append(out, chat.AudioPart(media))
 			case "file":
 				if err := RejectUnknownStrict(object, map[string]bool{"type": true, "file": true}); err != nil {
 					return nil, err
@@ -319,70 +319,73 @@ func ParseChatContent(raw jsontext.Value) ([]contract.Part, error) {
 					return nil, err
 				}
 				media.Filename = filename
-				out = append(out, contract.FilePart(media))
+				out = append(out, chat.FilePart(media))
 			default:
-				return nil, contract.Invalid("messages.content", "unsupported Chat Completions content type "+typeName)
+				return nil, chat.Invalid("messages.content", "unsupported Chat Completions content type "+typeName)
 			}
 		}
 		return out, nil
 	})
 }
 
-// ParseFileMedia parses a file reference object into contract.Media and an optional filename.
-func ParseFileMedia(object map[string]jsontext.Value, param string) (contract.Media, string, error) {
+// ParseFileMedia parses a file reference object into chat.Media and an optional filename.
+func ParseFileMedia(object map[string]jsontext.Value, param string) (chat.Media, string, error) {
 	if err := RejectUnknownStrict(object, map[string]bool{"type": true, "filename": true, "file_data": true, "file_url": true, "file_id": true}); err != nil {
-		return contract.Media{}, "", err
+		return chat.Media{}, "", err
 	}
 	filename := ""
 	if value, ok, err := DecodeString(object, "filename"); err != nil {
-		return contract.Media{}, "", err
+		return chat.Media{}, "", err
 	} else if ok {
 		filename = value
 	}
 	sources := 0
-	for _, key := range []string{"file_data", "file_url", "file_id"} {
-		if _, ok := object[key]; ok {
+	rawData, hasData := object["file_data"]
+	rawURL, hasURL := object["file_url"]
+	rawID, hasID := object["file_id"]
+	for _, ok := range []bool{hasData, hasURL, hasID} {
+		if ok {
 			sources++
 		}
 	}
 	if sources != 1 {
-		return contract.Media{}, "", contract.Invalid(param, "file requires exactly one of file_data, file_url, or file_id")
+		return chat.Media{}, "", chat.Invalid(param, "file requires exactly one of file_data, file_url, or file_id")
 	}
-	if raw, ok := object["file_data"]; ok {
-		encoded, err := RequireString(map[string]jsontext.Value{"file_data": raw}, "file_data")
+	switch {
+	case hasData:
+		encoded, err := RequireString(map[string]jsontext.Value{"file_data": rawData}, "file_data")
 		if err != nil {
-			return contract.Media{}, "", err
+			return chat.Media{}, "", err
 		}
 		media, err := ParseFileData(encoded, param+".file_data")
 		if err != nil {
-			return contract.Media{}, "", err
+			return chat.Media{}, "", err
 		}
 		return media, filename, nil
-	}
-	if raw, ok := object["file_url"]; ok {
-		value, err := RequireString(map[string]jsontext.Value{"file_url": raw}, "file_url")
+	case hasURL:
+		value, err := RequireString(map[string]jsontext.Value{"file_url": rawURL}, "file_url")
 		if err != nil {
-			return contract.Media{}, "", err
+			return chat.Media{}, "", err
 		}
 		media, err := ParseMediaURL(value, "")
 		return media, filename, err
-	}
-	if raw, ok := object["file_id"]; ok {
-		value, err := RequireString(map[string]jsontext.Value{"file_id": raw}, "file_id")
+	case hasID:
+		value, err := RequireString(map[string]jsontext.Value{"file_id": rawID}, "file_id")
 		if err != nil {
-			return contract.Media{}, "", err
+			return chat.Media{}, "", err
 		}
-		return contract.AssetMedia("application/octet-stream", value), filename, nil
+		return chat.AssetMedia("application/octet-stream", value), filename, nil
+	default:
+		return chat.Media{}, "", chat.Invalid(param, "file requires file_data, file_url, or file_id")
 	}
-	return contract.Media{}, "", contract.Invalid(param, "file requires file_data, file_url, or file_id")
 }
 
-// ParseFileData parses base64 or data URL file data into inline contract.Media.
-func ParseFileData(value, param string) (contract.Media, error) {
+// ParseFileData parses base64 or data URL file data into inline chat.Media.
+func ParseFileData(value, param string) (chat.Media, error) {
 	if strings.HasPrefix(value, "data:") {
 		media, err := ParseDataURL(value)
 		if err != nil {
-			return contract.Media{}, contract.Invalid(param, "must be a valid base64 data URL")
+			return chat.Media{}, chat.Invalid(param, "must be a valid base64 data URL")
 		}
 		if media.MIMEType == "" {
 			media.MIMEType = "application/octet-stream"
@@ -391,9 +394,9 @@ func ParseFileData(value, param string) (contract.Media, error) {
 	}
 	data, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
-		return contract.Media{}, contract.Invalid(param, "must be valid base64")
+		return chat.Media{}, chat.Invalid(param, "must be valid base64")
 	}
-	return contract.InlineMedia("application/octet-stream", data), nil
+	return chat.InlineMedia("application/octet-stream", data), nil
 }
 
 // ValidateImageDetail checks that detail is an allowed image detail value.
@@ -401,7 +404,7 @@ func ValidateImageDetail(detail, param string) error {
 	if detail == "" || detail == "auto" || detail == "low" || detail == "high" {
 		return nil
 	}
-	return contract.Unsupported(param, "supported image detail values are auto, low, and high")
+	return chat.Unsupported(param, "supported image detail values are auto, low, and high")
 }
 
 // AudioMIME maps a short audio format name to a MIME type.
@@ -423,10 +426,10 @@ func AudioMIME(format string) string {
 }
 
 // CollectText concatenates text and reasoning-summary parts.
-func CollectText(parts []contract.Part) string {
+func CollectText(parts []chat.Part) string {
 	var builder strings.Builder
 	for _, part := range parts {
-		if part.Type == contract.PartText || part.Type == contract.PartReasoningSummary {
+		if part.Type == chat.PartText || part.Type == chat.PartReasoningSummary {
 			builder.WriteString(part.Text)
 		}
 	}
@@ -434,10 +437,10 @@ func CollectText(parts []contract.Part) string {
 }
 
 // OutputTextParts converts text parts into Responses output_text objects.
-func OutputTextParts(parts []contract.Part) []map[string]any {
+func OutputTextParts(parts []chat.Part) []map[string]any {
 	out := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
-		if part.Type == contract.PartText {
+		if part.Type == chat.PartText {
 			out = append(out, map[string]any{"type": "output_text", "text": part.Text, "annotations": []any{}})
 		}
 	}
@@ -445,10 +448,10 @@ func OutputTextParts(parts []contract.Part) []map[string]any {
 }
 
 // InputTextParts converts text parts into Responses input_text objects.
-func InputTextParts(parts []contract.Part) []map[string]any {
+func InputTextParts(parts []chat.Part) []map[string]any {
 	out := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
-		if part.Type == contract.PartText {
+		if part.Type == chat.PartText {
 			out = append(out, map[string]any{"type": "input_text", "text": part.Text})
 		}
 	}
@@ -456,7 +459,7 @@ func InputTextParts(parts []contract.Part) []map[string]any {
 }
 
 // MediaDataURL encodes inline media as a base64 data URL.
-func MediaDataURL(media contract.Media) (string, error) {
+func MediaDataURL(media chat.Media) (string, error) {
 	if len(media.Data) == 0 {
 		return "", errors.New("media has no inline data")
 	}

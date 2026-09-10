@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kelindar/llmux/contract"
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +35,7 @@ func (w *noFlusherWriter) WriteHeader(statusCode int) {
 }
 
 func TestSSEWriter(t *testing.T) {
-	limits := contract.DefaultLimits()
+	limits := chat.DefaultLimits()
 
 	t.Run("startWriteDone", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -69,11 +69,11 @@ func TestSSEWriter(t *testing.T) {
 
 	t.Run("eventTooLarge", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		tiny := contract.Limits{MaxEventBytes: 8}
+		tiny := chat.Limits{MaxEventBytes: 8}
 		writer := NewSSEWriter(rec, tiny)
 		err := writer.Write("", map[string]any{"payload": "too large for limit"})
 		require.Error(t, err)
-		apiErr, ok := errors.AsType[*contract.APIError](err)
+		apiErr, ok := errors.AsType[*chat.APIError](err)
 		require.True(t, ok)
 		assert.Equal(t, "event_too_large", apiErr.Code)
 	})
@@ -96,7 +96,7 @@ func TestAsAPIError(t *testing.T) {
 			message: "internal server error",
 		},
 		"apiErrorPassthrough": {
-			err:     contract.Invalid("model", "missing model"),
+			err:     chat.Invalid("model", "missing model"),
 			status:  http.StatusBadRequest,
 			typ:     "invalid_request_error",
 			code:    "invalid_request",
@@ -111,7 +111,7 @@ func TestAsAPIError(t *testing.T) {
 			message: "internal server error",
 		},
 		"apiErrorDefaults": {
-			err:     &contract.APIError{Status: 0, Message: ""},
+			err:     &chat.APIError{Status: 0, Message: ""},
 			status:  http.StatusInternalServerError,
 			typ:     "server_error",
 			code:    "server_error",
@@ -134,8 +134,8 @@ func TestAsAPIError(t *testing.T) {
 }
 
 func TestAnthropicErrorType(t *testing.T) {
-	assert.Equal(t, "invalid_request_error", AnthropicErrorType(contract.Invalid("x", "y")))
-	assert.Equal(t, "api_error", AnthropicErrorType(&contract.APIError{Type: "server_error"}))
+	assert.Equal(t, "invalid_request_error", AnthropicErrorType(chat.Invalid("x", "y")))
+	assert.Equal(t, "api_error", AnthropicErrorType(&chat.APIError{Type: "server_error"}))
 }
 
 func TestWriteError(t *testing.T) {
@@ -147,19 +147,19 @@ func TestWriteError(t *testing.T) {
 	}{
 		"chat": {
 			kind:     Chat,
-			err:      contract.Invalid("model", "bad"),
+			err:      chat.Invalid("model", "bad"),
 			status:   http.StatusBadRequest,
 			contains: []string{`"invalid_request_error"`, `"model"`, `"bad"`},
 		},
 		"responses": {
 			kind:     Responses,
-			err:      contract.Unsupported("tools", "nope"),
+			err:      chat.Unsupported("tools", "nope"),
 			status:   http.StatusBadRequest,
 			contains: []string{`"unsupported"`, `"tools"`},
 		},
 		"anthropic": {
 			kind:     Anthropic,
-			err:      contract.Invalid("max_tokens", "required"),
+			err:      chat.Invalid("max_tokens", "required"),
 			status:   http.StatusBadRequest,
 			contains: []string{`"type":"error"`, `"invalid_request_error"`, `"required"`},
 		},

@@ -8,26 +8,27 @@ import (
 	"testing"
 
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestHandlerBuild(t *testing.T) {
-	agent := llmux.AgentFunc(func(_ context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
+	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		for _, part := range req.Input[0].Content {
-			if part.Type == llmux.PartImage && part.Media != nil {
-				return llmux.Outcome{}, llmux.EmitText(emit, "received "+part.Media.MIMEType)
+			if part.Type == chat.PartImage && part.Media != nil {
+				return chat.Outcome{}, emit(chat.Text("received " + part.Media.MIMEType))
 			}
 		}
-		return llmux.Outcome{}, llmux.EmitText(emit, "no image")
+		return chat.Outcome{}, emit(chat.Text("no image"))
 	})
-	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
-		return agent, llmux.Capabilities{InputModalities: llmux.ModalityText | llmux.ModalityImage}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityImage}, nil
 	})
 	handler := llmux.New(resolver)
 
 	body := `{"model":"agent/vision","messages":[{"role":"user","content":[{"type":"text","text":"what?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}}]}]}`
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

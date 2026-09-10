@@ -4,8 +4,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/anthropic"
-	"github.com/kelindar/llmux/internal/chat"
+	completions "github.com/kelindar/llmux/internal/completions"
 	"github.com/kelindar/llmux/internal/responses"
 )
 
@@ -20,7 +21,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request) {
 		writeProtocolError(w, protocolChat, fmtError("body", "request body must be valid JSON", err))
 		return
 	}
-	parsed, err := chat.ParseRequest(object)
+	parsed, err := completions.ParseRequest(object)
 	if err != nil {
 		writeProtocolError(w, protocolChat, err)
 		return
@@ -49,7 +50,7 @@ func (h *Handler) serveResponses(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("anthropic-version")) == "" {
-		writeProtocolError(w, protocolAnthropic, Invalid("anthropic-version", "anthropic-version header is required"))
+		writeProtocolError(w, protocolAnthropic, chat.Invalid("anthropic-version", "anthropic-version header is required"))
 		return
 	}
 	body, err := h.readBody(w, r, h.limits.MaxRequestBytes)

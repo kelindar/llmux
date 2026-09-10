@@ -9,25 +9,26 @@ import (
 	"testing"
 
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestLifecycleExample(t *testing.T) {
 	store := newStore()
-	agent := llmux.AgentFunc(func(_ context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
+	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		text := "turn"
 		if len(req.Turn) > 0 && len(req.Turn[0].Content) > 0 {
 			text = req.Turn[0].Content[0].Text
 		}
-		return llmux.Outcome{}, llmux.EmitText(emit, "echo: "+text)
+		return chat.Outcome{}, emit(chat.Text("echo: " + text))
 	})
-	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
-		return agent, llmux.Capabilities{Continuation: true}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{Continuation: true}, nil
 	})
 	mux := http.NewServeMux()
 	handler := llmux.New(resolver, llmux.WithLifecycle(store), llmux.WithContinuationStore(store), llmux.WithStoreDefault(true))
-	mux.Handle("/api/", handler)
+	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
 	mux.HandleFunc("GET /api/v1/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		rec, ok := store.get(r.PathValue("id"))
 		if !ok {

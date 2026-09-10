@@ -1,4 +1,4 @@
-package chat
+package completions
 
 import (
 	"encoding/json/jsontext"
@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kelindar/llmux/contract"
+	chat "github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
 	"github.com/kelindar/llmux/internal/wire"
@@ -26,8 +26,8 @@ func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
 func requireAPIError(t *testing.T, err error, code, param string) {
 	t.Helper()
 	require.Error(t, err)
-	apiErr, ok := errors.AsType[*contract.APIError](err)
-	require.True(t, ok, "expected contract.APIError, got %T", err)
+	apiErr, ok := errors.AsType[*chat.APIError](err)
+	require.True(t, ok, "expected chat.APIError, got %T", err)
 	assert.Equal(t, code, apiErr.Code)
 	if param != "" {
 		assert.Equal(t, param, apiErr.Param)
@@ -49,7 +49,7 @@ func TestParseRequest(t *testing.T) {
 				assert.Equal(t, "gpt-4", parsed.Request.Target)
 				assert.False(t, parsed.Stream)
 				require.Len(t, parsed.Request.Input, 1)
-				assert.Equal(t, contract.RoleUser, parsed.Request.Input[0].Role)
+				assert.Equal(t, chat.RoleUser, parsed.Request.Input[0].Role)
 			},
 		},
 		"streamWithTools": {
@@ -67,7 +67,7 @@ func TestParseRequest(t *testing.T) {
 			body: `{"model":"gpt-4","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"fn","arguments":"{}"}}]}]}`,
 			check: func(t *testing.T, parsed parsedRequest) {
 				require.Len(t, parsed.Request.Input, 1)
-				assert.Equal(t, contract.ItemFunctionCall, parsed.Request.Input[0].Type)
+				assert.Equal(t, chat.ItemFunctionCall, parsed.Request.Input[0].Type)
 				assert.Equal(t, "call_1", parsed.Request.Input[0].CallID)
 			},
 		},
@@ -75,22 +75,21 @@ func TestParseRequest(t *testing.T) {
 			body: `{"model":"gpt-4","messages":[{"role":"tool","tool_call_id":"call_1","content":"result"}]}`,
 			check: func(t *testing.T, parsed parsedRequest) {
 				require.Len(t, parsed.Request.Input, 1)
-				assert.Equal(t, contract.ItemFunctionCallOutput, parsed.Request.Input[0].Type)
+				assert.Equal(t, chat.ItemFunctionCallOutput, parsed.Request.Input[0].Type)
 			},
 		},
 		"responseFormatJsonSchema": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"out","schema":{"type":"object","properties":{"a":{"type":"string"}}}}}}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, "json_schema", parsed.Request.Output.Format)
-				require.NotNil(t, parsed.Request.Controls.Structured)
-				assert.Equal(t, "out", parsed.Request.Controls.Structured.Name)
+				assert.Equal(t, chat.FormatJSONSchema, parsed.Request.Output.Format.Kind)
+				assert.Equal(t, "out", parsed.Request.Output.Format.Name)
 			},
 		},
 		"modalitiesWithAudio": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"speak"}],"modalities":["text","audio"],"audio":{"voice":"alloy","format":"wav"}}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.True(t, parsed.Request.Output.Modalities.Has(contract.ModalityText))
-				assert.True(t, parsed.Request.Output.Modalities.Has(contract.ModalityAudio))
+				assert.True(t, parsed.Request.Output.Modalities.Has(chat.ModalityText))
+				assert.True(t, parsed.Request.Output.Modalities.Has(chat.ModalityAudio))
 				require.NotNil(t, parsed.Request.Controls.Audio)
 				assert.Equal(t, "alloy", parsed.Request.Controls.Audio.Voice)
 			},
@@ -231,21 +230,21 @@ func TestParseRequest(t *testing.T) {
 func TestAdapterValidateEvent(t *testing.T) {
 	adapter := Adapter{}
 	cases := map[string]struct {
-		event   contract.Event
+		event   chat.Event
 		wantErr bool
 	}{
 		"textMessage": {
-			event: contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("hi"))},
+			event: chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))},
 		},
 		"toolCall": {
-			event: contract.ToolCall("c1", "fn", `{}`),
+			event: chat.Tool("c1", "fn", `{}`),
 		},
 		"reasoningRejected": {
-			event:   contract.Event{Type: contract.EventReasoning, Item: contract.Item{Type: contract.ItemReasoning}},
+			event:   chat.Event{Type: chat.EventItem, Item: chat.Item{Type: chat.ItemReasoning}},
 			wantErr: true,
 		},
 		"imageMediaRejected": {
-			event:   contract.MediaOutput(contract.ImagePart(contract.InlineMedia("image/png", []byte{1}))),
+			event:   chat.MediaItem(chat.ImagePart(chat.InlineMedia("image/png", []byte{1}))),
 			wantErr: true,
 		},
 	}
@@ -264,12 +263,12 @@ func TestAdapterValidateEvent(t *testing.T) {
 func TestAdapterResponse(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	req := contract.Request{Target: "gpt-4"}
+	req := chat.Request{Target: "gpt-4"}
 
 	t.Run("textOnly", func(t *testing.T) {
 		result := execution.Result{
-			Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.TextPart("hello"))},
-			Outcome: contract.Outcome{Status: contract.StatusCompleted},
+			Items:   []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hello"))},
+			Outcome: chat.Outcome{Status: chat.StatusCompleted},
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
@@ -282,8 +281,8 @@ func TestAdapterResponse(t *testing.T) {
 
 	t.Run("toolCall", func(t *testing.T) {
 		result := execution.Result{
-			Items:   []contract.Item{contract.FunctionCallItem("call_1", "search", `{"q":"x"}`)},
-			Outcome: contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall},
+			Items:   []chat.Item{chat.FunctionCallItem("call_1", "search", `{"q":"x"}`)},
+			Outcome: chat.Outcome{Status: chat.StatusCompleted, StopReason: chat.StopToolCall},
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
@@ -294,13 +293,13 @@ func TestAdapterResponse(t *testing.T) {
 	})
 
 	t.Run("mediaItem", func(t *testing.T) {
-		audio := contract.InlineMedia("audio/wav", []byte{1})
+		audio := chat.InlineMedia("audio/wav", []byte{1})
 		audio.Format = "wav"
 		result := execution.Result{
-			Items:   []contract.Item{contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.AudioPart(audio)}}},
-			Outcome: contract.Outcome{Status: contract.StatusCompleted},
+			Items:   []chat.Item{chat.Item{Type: chat.ItemMedia, Content: []chat.Part{chat.AudioPart(audio)}}},
+			Outcome: chat.Outcome{Status: chat.StatusCompleted},
 		}
-		value, err := adapter.Response(contract.Request{}, result, meta)
+		value, err := adapter.Response(chat.Request{}, result, meta)
 		require.NoError(t, err)
 		data, err := json.Marshal(value)
 		require.NoError(t, err)
@@ -309,10 +308,10 @@ func TestAdapterResponse(t *testing.T) {
 
 	t.Run("reasoningRejected", func(t *testing.T) {
 		result := execution.Result{
-			Items:   []contract.Item{contract.Item{Type: contract.ItemReasoning}},
-			Outcome: contract.Outcome{Status: contract.StatusCompleted},
+			Items:   []chat.Item{chat.Item{Type: chat.ItemReasoning}},
+			Outcome: chat.Outcome{Status: chat.StatusCompleted},
 		}
-		_, err := adapter.Response(contract.Request{}, result, meta)
+		_, err := adapter.Response(chat.Request{}, result, meta)
 		requireAPIError(t, err, "unsupported", "output")
 	})
 }
@@ -320,15 +319,15 @@ func TestAdapterResponse(t *testing.T) {
 func TestAdapterStream(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	req := contract.Request{Target: "gpt-4", Controls: contract.Controls{IncludeUsage: true}}
-	limits := contract.DefaultLimits()
+	req := chat.Request{Target: "gpt-4", Controls: chat.Controls{IncludeUsage: true}}
+	limits := chat.DefaultLimits()
 
 	t.Run("textDelta", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		stream := adapter.Stream(rec, req, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("hel")))
 		require.NoError(t, stream.Event(TextDelta("lo")))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil))
 		assert.Contains(t, rec.Body.String(), "chat.completion.chunk")
 		assert.Contains(t, rec.Body.String(), "[DONE]")
 	})
@@ -336,11 +335,11 @@ func TestAdapterStream(t *testing.T) {
 	t.Run("toolCallFlow", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		stream := adapter.Stream(rec, req, &meta, limits)
-		require.NoError(t, stream.Event(contract.ToolCallStart("call_1", "search")))
+		require.NoError(t, stream.Event(chat.ToolStart("call_1", "search")))
 		require.NoError(t, stream.Event(ToolCallDelta("call_1", `{"q"`)))
 		require.NoError(t, stream.Event(ToolCallDelta("call_1", `:"x"}`)))
-		require.NoError(t, stream.Event(contract.ToolCallDone("call_1")))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall}, nil))
+		require.NoError(t, stream.Event(chat.ToolDone("call_1")))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, StopReason: chat.StopToolCall}, nil))
 		assert.Contains(t, rec.Body.String(), "tool_calls")
 		assert.Equal(t, "tool_calls", finishReasonFromStream(t, rec.Body.String()))
 	})
@@ -387,28 +386,28 @@ func splitLines(s string) []string {
 	return lines
 }
 
-func InlineMedia(mime string, data []byte) contract.Media {
-	return contract.InlineMedia(mime, data)
+func InlineMedia(mime string, data []byte) chat.Media {
+	return chat.InlineMedia(mime, data)
 }
 
-func ImagePart(media contract.Media) contract.Part {
-	return contract.ImagePart(media)
+func ImagePart(media chat.Media) chat.Part {
+	return chat.ImagePart(media)
 }
 
-func TextDelta(text string) contract.Event {
-	return contract.Event{Type: contract.EventTextDelta, Delta: text}
+func TextDelta(text string) chat.Event {
+	return chat.Event{Type: chat.EventTextDelta, Delta: text}
 }
 
-func ToolCallStart(callID, name string) contract.Event {
-	return contract.Event{Type: contract.EventToolCallStart, CallID: callID, Name: name}
+func ToolCallStart(callID, name string) chat.Event {
+	return chat.Event{Type: chat.EventToolCallStart, CallID: callID, Name: name}
 }
 
-func ToolCallDelta(callID, delta string) contract.Event {
-	return contract.Event{Type: contract.EventToolCallDelta, CallID: callID, Delta: delta}
+func ToolCallDelta(callID, delta string) chat.Event {
+	return chat.Event{Type: chat.EventToolCallDelta, CallID: callID, Delta: delta}
 }
 
-func ToolCallDone(callID string) contract.Event {
-	return contract.Event{Type: contract.EventToolCallDone, CallID: callID}
+func ToolCallDone(callID string) chat.Event {
+	return chat.Event{Type: chat.EventToolCallDone, CallID: callID}
 }
 
 func TestParseRequestExtra(t *testing.T) {
@@ -422,14 +421,13 @@ func TestParseRequestExtra(t *testing.T) {
 		"jsonObjectFormat": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_object"}}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, "json_object", parsed.Request.Output.Format)
-				require.NotNil(t, parsed.Request.Controls.Structured)
+				assert.Equal(t, chat.FormatJSONObject, parsed.Request.Output.Format.Kind)
 			},
 		},
 		"textFormat": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"text"}}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, "text", parsed.Request.Output.Format)
+				assert.Equal(t, chat.FormatText, parsed.Request.Output.Format.Kind)
 			},
 		},
 		"toolChoiceByName": {
@@ -448,22 +446,22 @@ func TestParseRequestExtra(t *testing.T) {
 		"storeAndMetadata": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"store":true,"metadata":{"k":"v"},"reasoning_effort":"medium"}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				require.NotNil(t, parsed.Request.Controls.Store)
-				assert.True(t, *parsed.Request.Controls.Store)
-				assert.Equal(t, "v", parsed.Request.Controls.Metadata["k"])
+				require.NotNil(t, parsed.Request.Store)
+				assert.True(t, *parsed.Request.Store)
+				assert.Equal(t, "v", parsed.Request.Metadata["k"])
 				require.NotNil(t, parsed.Request.Controls.Reasoning)
 			},
 		},
 		"imageContent": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, contract.PartImage, parsed.Request.Input[0].Content[0].Type)
+				assert.Equal(t, chat.PartImage, parsed.Request.Input[0].Content[0].Type)
 			},
 		},
 		"audioInput": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"YQ==","format":"wav"}}]}]}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, contract.PartAudio, parsed.Request.Input[0].Content[0].Type)
+				assert.Equal(t, chat.PartAudio, parsed.Request.Input[0].Content[0].Type)
 			},
 		},
 		"assistantEmptyContent": {
@@ -507,7 +505,7 @@ func TestParseRequestExtra(t *testing.T) {
 		"fileContent": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"file","file":{"file_data":"YQ==","filename":"a.txt"}}]}]}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				assert.Equal(t, contract.PartFile, parsed.Request.Input[0].Content[0].Type)
+				assert.Equal(t, chat.PartFile, parsed.Request.Input[0].Content[0].Type)
 			},
 		},
 		"toolChoiceNone": {
@@ -531,9 +529,8 @@ func TestParseRequestExtra(t *testing.T) {
 		"jsonSchemaFull": {
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"out","description":"desc","schema":{"type":"object"},"strict":true}}}`,
 			check: func(t *testing.T, parsed parsedRequest) {
-				require.NotNil(t, parsed.Request.Controls.Structured)
-				assert.Equal(t, "desc", parsed.Request.Controls.Structured.Description)
-				assert.True(t, parsed.Request.Controls.Structured.Strict)
+				assert.Equal(t, "desc", parsed.Request.Output.Format.Description)
+				assert.True(t, parsed.Request.Output.Format.Strict)
 			},
 		},
 	}
@@ -552,36 +549,36 @@ func TestParseRequestExtra(t *testing.T) {
 	}
 }
 
-func TestNewAdapter(t *testing.T) {
+func TestAdapterConstruct(t *testing.T) {
 	assert.NotNil(t, NewAdapter())
 }
 
 func TestAdapterValidateMore(t *testing.T) {
 	adapter := Adapter{}
-	audio := contract.InlineMedia("audio/wav", []byte{1, 2, 3})
+	audio := chat.InlineMedia("audio/wav", []byte{1, 2, 3})
 	audio.Format = "wav"
 	cases := map[string]struct {
-		event   contract.Event
+		event   chat.Event
 		wantErr bool
 	}{
 		"audioMessagePart": {
-			event: contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio))},
+			event: chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.AudioPart(audio))},
 		},
 		"audioMediaOutput": {
-			event: contract.MediaOutput(contract.AudioPart(audio)),
+			event: chat.MediaItem(chat.AudioPart(audio)),
 		},
 		"audioItemMedia": {
-			event: contract.Event{Type: contract.EventItem, Item: contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.AudioPart(audio)}}},
+			event: chat.Event{Type: chat.EventItem, Item: chat.Item{Type: chat.ItemMedia, Content: []chat.Part{chat.AudioPart(audio)}}},
 		},
 		"functionCallItem": {
-			event: contract.Event{Type: contract.EventItem, Item: contract.FunctionCallItem("c1", "fn", `{}`)},
+			event: chat.Event{Type: chat.EventItem, Item: chat.FunctionCallItem("c1", "fn", `{}`)},
 		},
 		"unsupportedItem": {
-			event:   contract.Event{Type: contract.EventItem, Item: contract.Item{Type: contract.ItemReasoning}},
+			event:   chat.Event{Type: chat.EventItem, Item: chat.Item{Type: chat.ItemReasoning}},
 			wantErr: true,
 		},
 		"messageImagePart": {
-			event:   contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.ImagePart(contract.InlineMedia("image/png", []byte{1})))},
+			event:   chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.ImagePart(chat.InlineMedia("image/png", []byte{1})))},
 			wantErr: true,
 		},
 	}
@@ -600,29 +597,29 @@ func TestAdapterValidateMore(t *testing.T) {
 func TestAdapterResponseErrors(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	audio := contract.InlineMedia("audio/wav", []byte{1})
+	audio := chat.InlineMedia("audio/wav", []byte{1})
 	audio.Format = "wav"
-	audio2 := contract.InlineMedia("audio/wav", []byte{2})
+	audio2 := chat.InlineMedia("audio/wav", []byte{2})
 	audio2.Format = "wav"
 	result := execution.Result{
-		Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio), contract.AudioPart(audio2))},
-		Outcome: contract.Outcome{Status: contract.StatusCompleted},
+		Items:   []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.AudioPart(audio), chat.AudioPart(audio2))},
+		Outcome: chat.Outcome{Status: chat.StatusCompleted},
 	}
-	_, err := adapter.Response(contract.Request{}, result, meta)
+	_, err := adapter.Response(chat.Request{}, result, meta)
 	requireAPIError(t, err, "unsupported", "output")
 }
 
 func TestAdapterResponseAudio(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	audio := contract.InlineMedia("audio/wav", []byte{1, 2, 3})
+	audio := chat.InlineMedia("audio/wav", []byte{1, 2, 3})
 	audio.Format = "wav"
 	audio.Ref = "audio_ref"
 	result := execution.Result{
-		Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio))},
-		Outcome: contract.Outcome{Status: contract.StatusCompleted},
+		Items:   []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.AudioPart(audio))},
+		Outcome: chat.Outcome{Status: chat.StatusCompleted},
 	}
-	value, err := adapter.Response(contract.Request{}, result, meta)
+	value, err := adapter.Response(chat.Request{}, result, meta)
 	require.NoError(t, err)
 	data, err := json.Marshal(value)
 	require.NoError(t, err)
@@ -665,27 +662,27 @@ func TestWireDelegates(t *testing.T) {
 	assert.NotEmpty(t, fileMedia.Data)
 
 	assert.Equal(t, "audio/wav", audioMIME("wav"))
-	parts := outputTextParts([]contract.Part{contract.TextPart("x")})
+	parts := outputTextParts([]chat.Part{chat.TextPart("x")})
 	require.Len(t, parts, 1)
-	url, err := mediaDataURL(contract.InlineMedia("image/png", []byte{1}))
+	url, err := mediaDataURL(chat.InlineMedia("image/png", []byte{1}))
 	require.NoError(t, err)
 	assert.Contains(t, url, "data:image/png")
-	assert.NotEmpty(t, newID("test_"))
+	assert.NotEmpty(t, newID())
 }
 
 func TestAdapterResponseCombined(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	audio := contract.InlineMedia("audio/wav", []byte{1})
+	audio := chat.InlineMedia("audio/wav", []byte{1})
 	audio.Format = "wav"
 	result := execution.Result{
-		Items: []contract.Item{
-			contract.MessageItem(contract.RoleAssistant, contract.TextPart("hello"), contract.AudioPart(audio)),
-			contract.FunctionCallItem("call_1", "search", `{}`),
+		Items: []chat.Item{
+			chat.MessageItem(chat.RoleAssistant, chat.TextPart("hello"), chat.AudioPart(audio)),
+			chat.FunctionCallItem("call_1", "search", `{}`),
 		},
-		Outcome: contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}},
+		Outcome: chat.Outcome{Status: chat.StatusCompleted, StopReason: chat.StopToolCall, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}},
 	}
-	value, err := adapter.Response(contract.Request{}, result, meta)
+	value, err := adapter.Response(chat.Request{}, result, meta)
 	require.NoError(t, err)
 	data, err := json.Marshal(value)
 	require.NoError(t, err)
@@ -696,15 +693,15 @@ func TestAdapterResponseCombined(t *testing.T) {
 func TestAdapterStreamErrors(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	limits := contract.DefaultLimits()
+	limits := chat.DefaultLimits()
 	rec := httptest.NewRecorder()
-	stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-	require.NoError(t, stream.Event(contract.ToolCallStart("call_1", "search")))
+	stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+	require.NoError(t, stream.Event(chat.ToolStart("call_1", "search")))
 	err := stream.Event(ToolCallDelta("missing", `{}`))
 	require.Error(t, err)
 	assert.True(t, stream.Started())
 	rec2 := httptest.NewRecorder()
-	stream2 := adapter.Stream(rec2, contract.Request{}, &meta, limits)
+	stream2 := adapter.Stream(rec2, chat.Request{}, &meta, limits)
 	require.NoError(t, stream2.Event(TextDelta("x")))
 	assert.True(t, stream2.Started())
 }
@@ -712,103 +709,103 @@ func TestAdapterStreamErrors(t *testing.T) {
 func TestAdapterStreamMore(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	limits := contract.DefaultLimits()
+	limits := chat.DefaultLimits()
 
 	t.Run("completeToolCall", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		require.NoError(t, stream.Event(contract.ToolCall("call_1", "search", `{"q":"x"}`)))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall}, nil))
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		require.NoError(t, stream.Event(chat.Tool("call_1", "search", `{"q":"x"}`)))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, StopReason: chat.StopToolCall}, nil))
 		assert.Contains(t, rec.Body.String(), "search")
 	})
 
 	t.Run("audioStream", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		audio := contract.InlineMedia("audio/wav", []byte{9, 8})
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		audio := chat.InlineMedia("audio/wav", []byte{9, 8})
 		audio.Format = "wav"
-		require.NoError(t, stream.Event(contract.MediaOutput(contract.AudioPart(audio))))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+		require.NoError(t, stream.Event(chat.MediaItem(chat.AudioPart(audio))))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, nil))
 		assert.Contains(t, rec.Body.String(), "audio")
 	})
 
 	t.Run("eventItemMessage", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		require.NoError(t, stream.Event(contract.Event{Type: contract.EventItem, Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("via item"))}))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("via item"))}))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, nil))
 	})
 
 	t.Run("eventItemToolCall", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		require.NoError(t, stream.Event(contract.Event{Type: contract.EventItem, Item: contract.FunctionCallItem("call_1", "search", `{}`)}))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall}, nil))
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: chat.FunctionCallItem("call_1", "search", `{}`)}))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, StopReason: chat.StopToolCall}, nil))
 	})
 
 	t.Run("lengthFinish", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("x")))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusIncomplete, StopReason: contract.StopLength}, nil))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusIncomplete, StopReason: chat.StopLength}, nil))
 		assert.Equal(t, "length", finishReasonFromStream(t, rec.Body.String()))
 	})
 
 	t.Run("unsupportedEvent", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		err := stream.Event(contract.Event{Type: "nope"})
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		err := stream.Event(chat.Event{Type: "nope"})
 		require.Error(t, err)
 	})
 
 	t.Run("reasoningStreamError", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		err := stream.Event(contract.Event{Type: contract.EventReasoning})
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		err := stream.Event(chat.Event{Type: chat.EventItem})
 		requireAPIError(t, err, "unsupported", "output")
 	})
 
 	t.Run("badMediaItem", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		err := stream.Event(contract.Event{Type: contract.EventItem, Item: contract.Item{Type: contract.ItemMedia, Content: []contract.Part{}}})
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		err := stream.Event(chat.Event{Type: chat.EventItem, Item: chat.Item{Type: chat.ItemMedia, Content: []chat.Part{}}})
 		requireAPIError(t, err, "unsupported", "output")
 	})
 
 	t.Run("completeUsage", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := contract.Request{Controls: contract.Controls{IncludeUsage: true}}
+		req := chat.Request{Controls: chat.Controls{IncludeUsage: true}}
 		stream := adapter.Stream(rec, req, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("x")))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil))
 		assert.Contains(t, rec.Body.String(), `"usage"`)
 	})
 
 	t.Run("messageAudio", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		audio := contract.InlineMedia("audio/wav", []byte{1, 2})
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		audio := chat.InlineMedia("audio/wav", []byte{1, 2})
 		audio.Format = "wav"
-		item := contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio))
-		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMessage, Item: item}))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+		item := chat.MessageItem(chat.RoleAssistant, chat.AudioPart(audio))
+		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, nil))
 		assert.Contains(t, rec.Body.String(), `"audio"`)
 	})
 
 	t.Run("mediaItemEvent", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		audio := contract.InlineMedia("audio/wav", []byte{3})
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		audio := chat.InlineMedia("audio/wav", []byte{3})
 		audio.Format = "wav"
-		item := contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.AudioPart(audio)}}
-		require.NoError(t, stream.Event(contract.Event{Type: contract.EventItem, Item: item}))
-		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+		item := chat.Item{Type: chat.ItemMedia, Content: []chat.Part{chat.AudioPart(audio)}}
+		require.NoError(t, stream.Event(chat.Event{Type: chat.EventItem, Item: item}))
+		require.NoError(t, stream.Complete(chat.Outcome{Status: chat.StatusCompleted}, nil))
 	})
 }
 
 func TestSSEWrite(t *testing.T) {
 	rec := httptest.NewRecorder()
-	sw := &sseWriter{w: rec, limits: contract.DefaultLimits()}
+	sw := &sseWriter{w: rec, limits: chat.DefaultLimits()}
 	require.NoError(t, sw.start())
 	require.NoError(t, sw.write("", map[string]any{"ok": true}))
 	require.NoError(t, sw.done())
@@ -818,19 +815,19 @@ func TestSSEWrite(t *testing.T) {
 func TestAdapterStreamFail(t *testing.T) {
 	adapter := Adapter{}
 	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
-	limits := contract.DefaultLimits()
+	limits := chat.DefaultLimits()
 
 	t.Run("beforeStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
-		err := stream.Fail(contract.Invalid("model", "bad model"))
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
+		err := stream.Fail(chat.Invalid("model", "bad model"))
 		requireAPIError(t, err, "invalid_request", "model")
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
 	t.Run("afterStart", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("x")))
 		require.NoError(t, stream.Fail(errors.New("boom")))
 		assert.Contains(t, rec.Body.String(), "error")
@@ -838,9 +835,9 @@ func TestAdapterStreamFail(t *testing.T) {
 
 	t.Run("afterStartWithParam", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		stream := adapter.Stream(rec, contract.Request{}, &meta, limits)
+		stream := adapter.Stream(rec, chat.Request{}, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("x")))
-		require.NoError(t, stream.Fail(contract.Invalid("model", "bad")))
+		require.NoError(t, stream.Fail(chat.Invalid("model", "bad")))
 		assert.Contains(t, rec.Body.String(), `"param":"model"`)
 	})
 }

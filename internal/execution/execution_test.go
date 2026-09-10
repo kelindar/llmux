@@ -6,16 +6,16 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kelindar/llmux/contract"
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type stubAgent struct {
-	run func(context.Context, *contract.Request, contract.Emit) (contract.Outcome, error)
+	run func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error)
 }
 
-func (a stubAgent) Run(ctx context.Context, req *contract.Request, emit contract.Emit) (contract.Outcome, error) {
+func (a stubAgent) Run(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 	return a.run(ctx, req, emit)
 }
 
@@ -25,37 +25,37 @@ func TestRun(t *testing.T) {
 
 	cases := map[string]struct {
 		agent   stubAgent
-		limits  contract.Limits
-		onEvent func(contract.Event) error
+		limits  chat.Limits
+		onEvent func(chat.Event) error
 		wantErr error
 		check   func(t *testing.T, result Result, err error)
 	}{
 		"successTextDelta": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, Delta: "hel"}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, Delta: "lo"}))
-				return contract.Outcome{Status: contract.StatusCompleted, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, Delta: "hel"}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, Delta: "lo"}))
+				return chat.Outcome{Status: chat.StatusCompleted, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
 				require.Len(t, result.Items, 1)
 				assert.Equal(t, "hello", result.Items[0].Content[0].Text)
-				assert.Equal(t, contract.StopStop, result.Outcome.StopReason)
+				assert.Equal(t, chat.StopStop, result.Outcome.StopReason)
 			},
 		},
 		"agentError": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, _ contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusFailed}, agentErr
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusFailed}, agentErr
 			}},
 			wantErr: agentErr,
 			check: func(t *testing.T, result Result, err error) {
 				require.ErrorIs(t, err, agentErr)
-				assert.Equal(t, contract.StatusFailed, result.Outcome.Status)
+				assert.Equal(t, chat.StatusFailed, result.Outcome.Status)
 			},
 		},
 		"outcomeValidation": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, _ contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusInProgress}, nil
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusInProgress}, nil
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -63,32 +63,32 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"onEventError": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventTextDelta, Delta: "x"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventTextDelta, Delta: "x"})
 			}},
-			onEvent: func(contract.Event) error { return onEventErr },
+			onEvent: func(chat.Event) error { return onEventErr },
 			wantErr: onEventErr,
 		},
 		"toolCallFlow": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallDelta, CallID: "call_1", Delta: `{"q"`}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallDelta, CallID: "call_1", Delta: `:"x"}`}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallDone, CallID: "call_1"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, nil
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallDelta, CallID: "call_1", Delta: `{"q"`}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallDelta, CallID: "call_1", Delta: `:"x"}`}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallDone, CallID: "call_1"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
 				require.Len(t, result.Items, 1)
 				assert.Equal(t, `{"q":"x"}`, result.Items[0].Arguments)
-				assert.Equal(t, contract.StopToolCall, result.Outcome.StopReason)
+				assert.Equal(t, chat.StopToolCall, result.Outcome.StopReason)
 			},
 		},
 		"completeMessage": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{
-					Type: contract.EventMessage,
-					Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("done")),
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{
+					Type: chat.EventItem,
+					Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("done")),
 				})
 			}},
 			check: func(t *testing.T, result Result, err error) {
@@ -97,25 +97,25 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"reasoningAndMedia": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventReasoning, Text: "brief"}))
-				audio := contract.InlineMedia("audio/wav", []byte{1})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Reasoning("brief")))
+				audio := chat.InlineMedia("audio/wav", []byte{1})
 				audio.Format = "wav"
-				require.NoError(t, emit(contract.Event{Type: contract.EventMedia, Part: contract.AudioPart(audio)}))
-				return contract.Outcome{Status: contract.StatusCompleted}, nil
+				require.NoError(t, emit(chat.MediaItem(chat.AudioPart(audio))))
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
 				require.Len(t, result.Items, 2)
-				assert.Equal(t, contract.ItemReasoning, result.Items[0].Type)
-				assert.Equal(t, contract.ItemMedia, result.Items[1].Type)
+				assert.Equal(t, chat.ItemReasoning, result.Items[0].Type)
+				assert.Equal(t, chat.ItemMedia, result.Items[1].Type)
 			},
 		},
 		"itemEvent": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{
-					Type: contract.EventItem,
-					Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("item")),
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{
+					Type: chat.EventItem,
+					Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("item")),
 				})
 			}},
 			check: func(t *testing.T, result Result, err error) {
@@ -124,11 +124,11 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"duplicateItemID": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("one"))
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("one"))
 				item.ID = "dup"
-				require.NoError(t, emit(contract.Event{Type: contract.EventItem, Item: item}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventItem, Item: item})
+				require.NoError(t, emit(chat.Event{Type: chat.EventItem, Item: item}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: item})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -136,137 +136,150 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"invalidToolDone": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCallDone, CallID: "call_1"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventToolCallDone, CallID: "call_1"})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "invalid JSON")
 			},
 		},
-		"textDoneMismatch": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, Delta: "abc"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventTextDone, Text: "wrong"})
-			}},
-			check: func(t *testing.T, _ Result, err error) {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "does not match")
-			},
-		},
-		"directToolCall": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCall, CallID: "call_1", Name: "search", Arguments: `{"q":"x"}`})
+		"textDoneClosesAccumulated": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, Delta: "abc"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.TextDone(""))
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, contract.StopToolCall, result.Outcome.StopReason)
+				assert.Equal(t, "abc", result.Items[0].Content[0].Text)
+				assert.Equal(t, chat.StatusCompleted, result.Items[0].Status)
+			},
+		},
+		"textDoneWithoutOpen": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.TextDone("msg_missing"))
+			}},
+			check: func(t *testing.T, _ Result, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "not open")
+			},
+		},
+		"directToolCall": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Tool("call_1", "search", `{"q":"x"}`))
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, chat.StopToolCall, result.Outcome.StopReason)
 			},
 		},
 		"unknownEvent": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: "bogus"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: "bogus"})
 			}},
 			check: func(t *testing.T, _ Result, err error) { require.Error(t, err) },
 		},
 		"duplicateToolCall": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"})
 			}},
 			check: func(t *testing.T, _ Result, err error) { require.Error(t, err) },
 		},
 		"itemWhileToolOpen": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventItem, Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("x"))})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("x"))})
 			}},
 			check: func(t *testing.T, _ Result, err error) { require.Error(t, err) },
 		},
 		"eventTooLarge": {
-			limits: contract.Limits{MaxOutputBytes: 1 << 20, MaxEventBytes: 16, MaxMediaBytes: 1 << 20},
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("too long for event limit"))})
+			limits: chat.Limits{MaxOutputBytes: 1 << 20, MaxEventBytes: 16, MaxMediaBytes: 1 << 20},
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: chat.MessageItem(chat.RoleAssistant, chat.TextPart("too long for event limit"))})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
-				apiErr, ok := errors.AsType[*contract.APIError](err)
+				apiErr, ok := errors.AsType[*chat.APIError](err)
 				require.True(t, ok)
 				assert.Equal(t, "event_too_large", apiErr.Code)
 			},
 		},
 		"textDoneExplicitID": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_1", Delta: "ok"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventTextDone, ItemID: "msg_1"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "ok"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventTextDone, ItemID: "msg_1"})
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "ok", result.Items[0].Content[0].Text)
 			},
 		},
-		"toolArgsMismatch": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallDelta, CallID: "call_1", Delta: `{"q":"x"}`}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCallDone, CallID: "call_1", Arguments: `{"q":"y"}`})
-			}},
-			check: func(t *testing.T, _ Result, err error) { require.Error(t, err) },
-		},
-		"finishOpenTool": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallStart, CallID: "call_1", Name: "search"}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventToolCallDelta, CallID: "call_1", Delta: `{"q":"x"}`}))
-				return contract.Outcome{Status: contract.StatusCompleted}, nil
+		"toolDoneUsesAccumulated": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallDelta, CallID: "call_1", Delta: `{"q":"x"}`}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.ToolDone("call_1"))
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, contract.StatusCompleted, result.Items[0].Status)
+				assert.Equal(t, `{"q":"x"}`, result.Items[0].Arguments)
+			},
+		},
+		"finishOpenTool": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1", Name: "search"}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventToolCallDelta, CallID: "call_1", Delta: `{"q":"x"}`}))
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, chat.StatusCompleted, result.Items[0].Status)
 			},
 		},
 		"outputTooLarge": {
-			limits: contract.Limits{MaxOutputBytes: 4, MaxEventBytes: 1 << 20, MaxMediaBytes: 1 << 20},
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventTextDelta, Delta: "toolong"})
+			limits: chat.Limits{MaxOutputBytes: 4, MaxEventBytes: 1 << 20, MaxMediaBytes: 1 << 20},
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventTextDelta, Delta: "toolong"})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
-				apiErr, ok := errors.AsType[*contract.APIError](err)
+				apiErr, ok := errors.AsType[*chat.APIError](err)
 				require.True(t, ok)
 				assert.Equal(t, "output_too_large", apiErr.Code)
 			},
 		},
 		"switchTextItem": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_a", Delta: "a"}))
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_b", Delta: "b"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, nil
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_a", Delta: "a"}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_b", Delta: "b"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
 				require.Len(t, result.Items, 2)
 			},
 		},
-		"badMessageEvent": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventMessage, Item: contract.Item{Type: contract.ItemFunctionCall}})
+		"badFunctionCallItem": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: chat.Item{Type: chat.ItemFunctionCall}})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "message event")
+				assert.Contains(t, err.Error(), "tool call requires call_id, name, and valid JSON arguments")
 			},
 		},
-		"badMediaEvent": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventMedia, Part: contract.TextPart("nope")})
+		"badMediaItem": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.MediaItem(chat.TextPart("nope")))
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "media event")
+				assert.Contains(t, err.Error(), "media item must contain image or audio")
 			},
 		},
 		"emptyEventType": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -274,12 +287,12 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"finishOnEventError": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				require.NoError(t, emit(contract.Event{Type: contract.EventTextDelta, Delta: "open"}))
-				return contract.Outcome{Status: contract.StatusCompleted}, nil
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, Delta: "open"}))
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
 			}},
-			onEvent: func(event contract.Event) error {
-				if event.Type == contract.EventTextDone {
+			onEvent: func(event chat.Event) error {
+				if event.Type == chat.EventTextDone {
 					return onEventErr
 				}
 				return nil
@@ -287,17 +300,17 @@ func TestRun(t *testing.T) {
 			wantErr: onEventErr,
 		},
 		"cancelledOutcome": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, _ contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCancelled}, nil
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCancelled}, nil
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, contract.StopCancelled, result.Outcome.StopReason)
+				assert.Equal(t, chat.StopCancelled, result.Outcome.StopReason)
 			},
 		},
 		"unknownToolDelta": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCallDelta, CallID: "missing", Delta: "x"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventToolCallDelta, CallID: "missing", Delta: "x"})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -305,37 +318,37 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"imageMedia": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				img := contract.InlineMedia("image/png", []byte{1, 2, 3})
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventMedia, Part: contract.ImagePart(img)})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				img := chat.InlineMedia("image/png", []byte{1, 2, 3})
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.MediaItem(chat.ImagePart(img)))
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, contract.ItemMedia, result.Items[0].Type)
+				assert.Equal(t, chat.ItemMedia, result.Items[0].Type)
 			},
 		},
 		"reasoningRich": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				item := contract.Item{
-					Type:             contract.ItemReasoning,
-					Summary:          []contract.Part{contract.SummaryPart("brief")},
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				item := chat.Item{
+					Type:             chat.ItemReasoning,
+					Summary:          []chat.Part{chat.SummaryPart("brief")},
 					EncryptedContent: []byte("enc"),
 					Data:             []byte("raw"),
 				}
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventReasoning, Item: item})
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: item})
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, contract.ItemReasoning, result.Items[0].Type)
+				assert.Equal(t, chat.ItemReasoning, result.Items[0].Type)
 			},
 		},
 		"textItemNotOpen": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				item := contract.MessageItem(contract.RoleAssistant, contract.TextPart("done"))
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				item := chat.MessageItem(chat.RoleAssistant, chat.TextPart("done"))
 				item.ID = "msg_closed"
-				item.Status = contract.StatusCompleted
-				require.NoError(t, emit(contract.Event{Type: contract.EventItem, Item: item}))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventTextDelta, ItemID: "msg_closed", Delta: "x"})
+				item.Status = chat.StatusCompleted
+				require.NoError(t, emit(chat.Event{Type: chat.EventItem, Item: item}))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_closed", Delta: "x"})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -343,8 +356,8 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"toolStartMissingID": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCallStart, Name: "search"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventToolCallStart, Name: "search"})
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -352,8 +365,8 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"invalidDirectToolCall": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventToolCall, CallID: "call_1", Name: "search"})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Tool("call_1", "search", "not-json"))
 			}},
 			check: func(t *testing.T, _ Result, err error) {
 				require.Error(t, err)
@@ -361,14 +374,14 @@ func TestRun(t *testing.T) {
 			},
 		},
 		"functionOutputItem": {
-			agent: stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
-				img := contract.InlineMedia("image/png", []byte{1, 2})
-				item := contract.FunctionCallOutputItem("call_1", contract.TextPart("done"), contract.ImagePart(img))
-				return contract.Outcome{Status: contract.StatusCompleted}, emit(contract.Event{Type: contract.EventItem, Item: item})
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				img := chat.InlineMedia("image/png", []byte{1, 2})
+				item := chat.FunctionCallOutputItem("call_1", chat.TextPart("done"), chat.ImagePart(img))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{Type: chat.EventItem, Item: item})
 			}},
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, contract.ItemFunctionCallOutput, result.Items[0].Type)
+				assert.Equal(t, chat.ItemFunctionCallOutput, result.Items[0].Type)
 			},
 		},
 	}
@@ -377,10 +390,10 @@ func TestRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			limits := tc.limits
 			if limits.MaxOutputBytes == 0 && limits.MaxEventBytes == 0 {
-				limits = contract.DefaultLimits()
+				limits = chat.DefaultLimits()
 			}
 			onEvent := tc.onEvent
-			result, err := Run(context.Background(), &contract.Request{}, tc.agent, limits, onEvent)
+			result, err := Run(context.Background(), &chat.Request{}, tc.agent, limits, onEvent)
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
 			}
@@ -393,56 +406,170 @@ func TestRun(t *testing.T) {
 	t.Run("contextCancel", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		agent := stubAgent{run: func(ctx context.Context, _ *contract.Request, _ contract.Emit) (contract.Outcome, error) {
+		agent := stubAgent{run: func(ctx context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			<-ctx.Done()
-			return contract.Outcome{}, ctx.Err()
+			return chat.Outcome{}, ctx.Err()
 		}}
-		_, err := Run(ctx, &contract.Request{}, agent, contract.DefaultLimits(), nil)
+		_, err := Run(ctx, &chat.Request{}, agent, chat.DefaultLimits(), nil)
 		require.ErrorIs(t, err, context.Canceled)
 	})
 
 	t.Run("emitClosed", func(t *testing.T) {
-		var saved contract.Emit
-		agent := stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
+		var saved chat.Emit
+		agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			saved = emit
-			return contract.Outcome{Status: contract.StatusCompleted}, nil
+			return chat.Outcome{Status: chat.StatusCompleted}, nil
 		}}
-		_, err := Run(context.Background(), &contract.Request{}, agent, contract.DefaultLimits(), nil)
+		_, err := Run(context.Background(), &chat.Request{}, agent, chat.DefaultLimits(), nil)
 		require.NoError(t, err)
-		require.ErrorIs(t, saved(contract.Event{Type: contract.EventTextDelta, Delta: "x"}), contract.ErrEmitClosed)
+		require.ErrorIs(t, saved(chat.Event{Type: chat.EventTextDelta, Delta: "x"}), chat.ErrEmitClosed)
 	})
 
 	t.Run("concurrentEmit", func(t *testing.T) {
 		started := make(chan struct{})
 		block := make(chan struct{})
-		agent := stubAgent{run: func(_ context.Context, _ *contract.Request, emit contract.Emit) (contract.Outcome, error) {
+		agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			var wg sync.WaitGroup
 			wg.Add(1)
 			var firstErr error
 			go func() {
 				defer wg.Done()
-				firstErr = emit(contract.Event{Type: contract.EventTextDelta, Delta: "a"})
+				firstErr = emit(chat.Event{Type: chat.EventTextDelta, Delta: "a"})
 			}()
 			<-started
-			secondErr := emit(contract.Event{Type: contract.EventTextDelta, Delta: "b"})
+			secondErr := emit(chat.Event{Type: chat.EventTextDelta, Delta: "b"})
 			close(block)
 			wg.Wait()
 			if secondErr != nil {
-				return contract.Outcome{}, secondErr
+				return chat.Outcome{}, secondErr
 			}
-			return contract.Outcome{Status: contract.StatusCompleted}, firstErr
+			return chat.Outcome{Status: chat.StatusCompleted}, firstErr
 		}}
 		once := sync.Once{}
-		_, err := Run(context.Background(), &contract.Request{}, agent, contract.DefaultLimits(), func(contract.Event) error {
+		_, err := Run(context.Background(), &chat.Request{}, agent, chat.DefaultLimits(), func(chat.Event) error {
 			once.Do(func() { started <- struct{}{} })
 			<-block
 			return nil
 		})
-		require.ErrorIs(t, err, contract.ErrConcurrentEmit)
+		require.ErrorIs(t, err, chat.ErrConcurrentEmit)
 	})
 }
 
 func TestFunctionCallItem(t *testing.T) {
-	item := contract.FunctionCallItem("call_1", "search", `{"q":"x"}`)
+	item := chat.FunctionCallItem("call_1", "search", `{"q":"x"}`)
+	assert.Equal(t, chat.ItemFunctionCall, item.Type)
 	assert.Equal(t, "call_1", item.CallID)
+}
+
+func TestClosure(t *testing.T) {
+	tests := map[string]struct {
+		agent stubAgent
+		check func(t *testing.T, result Result, err error)
+	}{
+		"empty output": {
+			agent: stubAgent{run: func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, result.Items)
+				assert.Equal(t, chat.StopStop, result.Outcome.StopReason)
+			},
+		},
+		"interleaved text ids": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_a", Delta: "A"}))
+				require.NoError(t, emit(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_b", Delta: "B"}))
+				require.NoError(t, emit(chat.ToolStart("call_1", "search")))
+				require.NoError(t, emit(chat.ToolDelta("call_1", `{}`)))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.ToolDone("call_1"))
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				require.Len(t, result.Items, 3)
+				assert.Equal(t, "msg_a", result.Items[0].ID)
+				assert.Equal(t, "A", result.Items[0].Content[0].Text)
+				assert.Equal(t, chat.StatusCompleted, result.Items[0].Status)
+				assert.Equal(t, "msg_b", result.Items[1].ID)
+				assert.Equal(t, "B", result.Items[1].Content[0].Text)
+				assert.Equal(t, chat.StatusCompleted, result.Items[1].Status)
+				assert.Equal(t, chat.ItemFunctionCall, result.Items[2].Type)
+				assert.Equal(t, `{}`, result.Items[2].Arguments)
+			},
+		},
+		"automatic text closure": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.TextDelta("open")))
+				return chat.Outcome{Status: chat.StatusCompleted}, nil
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				require.Len(t, result.Items, 1)
+				assert.Equal(t, "open", result.Items[0].Content[0].Text)
+				assert.Equal(t, chat.StatusCompleted, result.Items[0].Status)
+			},
+		},
+		"malformed tool arguments": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				require.NoError(t, emit(chat.ToolStart("call_1", "search")))
+				require.NoError(t, emit(chat.ToolDelta("call_1", "{bad")))
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.ToolDone("call_1"))
+			}},
+			check: func(t *testing.T, _ Result, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid JSON")
+			},
+		},
+		"canonical reasoning": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Reasoning("think"))
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				require.Len(t, result.Items, 1)
+				assert.Equal(t, chat.ItemReasoning, result.Items[0].Type)
+				require.Len(t, result.Items[0].Summary, 1)
+				assert.Equal(t, "think", result.Items[0].Summary[0].Text)
+			},
+		},
+		"reasoning without summary": {
+			agent: stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+				return chat.Outcome{Status: chat.StatusCompleted}, emit(chat.Event{
+					Type: chat.EventItem,
+					Item: chat.Item{Type: chat.ItemReasoning, Status: chat.StatusCompleted},
+				})
+			}},
+			check: func(t *testing.T, result Result, err error) {
+				require.NoError(t, err)
+				require.Len(t, result.Items, 1)
+				assert.Equal(t, chat.ItemReasoning, result.Items[0].Type)
+				assert.Empty(t, result.Items[0].Summary)
+			},
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			result, err := Run(context.Background(), &chat.Request{}, tc.agent, chat.DefaultLimits(), nil)
+			tc.check(t, result, err)
+		})
+	}
+}
+
+func BenchmarkEventApply(b *testing.B) {
+	agent := stubAgent{run: func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		require.NoError(b, emit(chat.ToolStart("call_1", "search")))
+		require.NoError(b, emit(chat.ToolDelta("call_1", `{"q":"`)))
+		require.NoError(b, emit(chat.ToolDelta("call_1", `x"}`)))
+		require.NoError(b, emit(chat.ToolDone("call_1")))
+		require.NoError(b, emit(chat.TextDelta("hello")))
+		require.NoError(b, emit(chat.TextDone("")))
+		return chat.Outcome{Status: chat.StatusCompleted}, nil
+	}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, err := Run(context.Background(), &chat.Request{}, agent, chat.DefaultLimits(), nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -15,19 +15,20 @@ import (
 	"time"
 
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
 )
 
 func main() {
 	store := newStore()
-	agent := llmux.AgentFunc(func(_ context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
+	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		text := "turn"
 		if len(req.Turn) > 0 && len(req.Turn[0].Content) > 0 {
 			text = req.Turn[0].Content[0].Text
 		}
-		return llmux.Outcome{}, llmux.EmitText(emit, "echo: "+text)
+		return chat.Outcome{}, emit(chat.Text("echo: " + text))
 	})
-	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
-		return agent, llmux.Capabilities{Continuation: true}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{Continuation: true}, nil
 	})
 
 	mux := http.NewServeMux()
@@ -36,8 +37,8 @@ func main() {
 		llmux.WithContinuationStore(store),
 		llmux.WithStoreDefault(true),
 	)
-	mux.Handle("/api/", handler)
-	mux.HandleFunc("GET /api/v1/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
+	mux.HandleFunc("GET /api/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		rec, ok := store.get(r.PathValue("id"))
 		if !ok {
 			http.NotFound(w, r)
@@ -52,7 +53,7 @@ func main() {
 		_ = json.MarshalWrite(w, body)
 	})
 
-	log.Println("listening on http://127.0.0.1:8080 (POST /api/v1/responses)")
+	log.Println("listening on http://127.0.0.1:8080 (POST /api/responses)")
 	if err := http.ListenAndServe("127.0.0.1:8080", mux); err != nil {
 		log.Fatal(err)
 	}
@@ -62,9 +63,9 @@ type turnRecord struct {
 	ID      string
 	Created int64
 	Parent  string
-	Turn    []llmux.Item
-	Request *llmux.Request
-	State   llmux.ResponseState
+	Turn    []chat.Item
+	Request *chat.Request
+	State   chat.ResponseState
 }
 
 type store struct {
@@ -72,7 +73,7 @@ type store struct {
 	seq     atomic.Int64
 	byID    map[string]turnRecord
 	byKey   map[string]string
-	pending map[string]string // response ID -> idempotency key
+	pending map[string]string
 	running map[string]bool
 }
 
@@ -85,7 +86,7 @@ func newStore() *store {
 	}
 }
 
-func (s *store) Load(_ context.Context, id string) ([]llmux.Item, error) {
+func (s *store) Load(_ context.Context, id string) ([]chat.Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.byID[id]
@@ -104,7 +105,7 @@ func (s *store) Load(_ context.Context, id string) ([]llmux.Item, error) {
 		}
 		cur = parent
 	}
-	var items []llmux.Item
+	var items []chat.Item
 	for _, c := range slices.Backward(chain) {
 		items = append(items, cloneItems(c.Turn)...)
 		items = append(items, cloneItems(c.State.Output)...)
@@ -112,13 +113,13 @@ func (s *store) Load(_ context.Context, id string) ([]llmux.Item, error) {
 	return items, nil
 }
 
-func (s *store) Accept(ctx context.Context, turn *llmux.TurnRequest) (llmux.Acceptance, error) {
+func (s *store) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := turn.IdempotencyKey
 	if key != "" {
 		if s.running[key] {
-			return llmux.Acceptance{}, &llmux.APIError{
+			return chat.Acceptance{}, &chat.APIError{
 				Status:  http.StatusConflict,
 				Type:    "invalid_request_error",
 				Code:    "request_in_progress",
@@ -128,7 +129,7 @@ func (s *store) Accept(ctx context.Context, turn *llmux.TurnRequest) (llmux.Acce
 		if id, ok := s.byKey[key]; ok {
 			rec := s.byID[id]
 			state := rec.State.Clone()
-			return llmux.Acceptance{
+			return chat.Acceptance{
 				ID:      rec.ID,
 				Created: rec.Created,
 				Replay:  &state,
@@ -136,29 +137,29 @@ func (s *store) Accept(ctx context.Context, turn *llmux.TurnRequest) (llmux.Acce
 		}
 		s.running[key] = true
 	}
-	if turn.Store != nil && !*turn.Store {
-		return llmux.Acceptance{}, llmux.Unsupported("store", "example requires store")
-	}
-	if !turn.Retain {
-		return llmux.Acceptance{}, llmux.Unsupported("store", "example requires store")
+	switch {
+	case turn.Request.Store != nil && !*turn.Request.Store:
+		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
+	case !turn.Request.Retain:
+		return chat.Acceptance{}, chat.Unsupported("store", "example requires store")
 	}
 
 	n := s.seq.Add(1)
 	id := "resp_" + strconv.FormatInt(n, 10)
-	acc := llmux.Acceptance{ID: id, Created: n}
+	acc := chat.Acceptance{ID: id, Created: n}
 	if key != "" {
 		s.pending[id] = key
 	}
 	if turn.Request.Controls.Extensions["x-durable"] != nil {
 		acc.Durable = true
 		acc.Context = context.WithoutCancel(ctx)
-		cleanupCtx, _ := llmux.CleanupContext(ctx, time.Second)
+		cleanupCtx, _ := chat.CleanupContext(ctx, time.Second)
 		acc.Finalize = cleanupCtx
 	}
 	return acc, nil
 }
 
-func (s *store) Finalize(_ context.Context, result *llmux.TurnResult) error {
+func (s *store) Finalize(_ context.Context, result *chat.TurnResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := s.pending[result.ID]
@@ -170,8 +171,8 @@ func (s *store) Finalize(_ context.Context, result *llmux.TurnResult) error {
 		return nil
 	}
 	parent := ""
-	if result.Request.Controls.PreviousResponseID != nil {
-		parent = *result.Request.Controls.PreviousResponseID
+	if result.Request.Previous != nil {
+		parent = *result.Request.Previous
 	}
 	rec := turnRecord{
 		ID:      result.ID,
@@ -195,8 +196,8 @@ func (s *store) get(id string) (turnRecord, bool) {
 	return rec, ok
 }
 
-func cloneItems(items []llmux.Item) []llmux.Item {
-	out := make([]llmux.Item, len(items))
+func cloneItems(items []chat.Item) []chat.Item {
+	out := make([]chat.Item, len(items))
 	for i, item := range items {
 		out[i] = item.Clone()
 	}

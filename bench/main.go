@@ -12,8 +12,9 @@ import (
 
 	"github.com/kelindar/bench"
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/anthropic"
-	"github.com/kelindar/llmux/internal/chat"
+	completions "github.com/kelindar/llmux/internal/completions"
 	"github.com/kelindar/llmux/internal/execution"
 	"github.com/kelindar/llmux/internal/responses"
 	"github.com/kelindar/llmux/internal/wire"
@@ -39,14 +40,14 @@ func main() {
 		panic(err)
 	}
 
-	agent := llmux.AgentFunc(func(ctx context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
-		return llmux.Outcome{}, llmux.EmitText(emit, "ok")
+	agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
-		return agent, llmux.Capabilities{}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{}, nil
 	})
 	handler := llmux.New(resolver,
-		llmux.WithModels(llmux.Model{ID: "bench"}),
+		llmux.WithModels(chat.Model{ID: "bench"}),
 		llmux.WithTranscriber(llmux.TranscriberFunc(func(context.Context, llmux.TranscriptionRequest) (llmux.Transcription, error) {
 			return llmux.Transcription{Text: "ok"}, nil
 		})),
@@ -61,36 +62,36 @@ func main() {
 		})
 
 		b.Run("exec/run", func(int) {
-			result, err := execution.Run(context.Background(), &llmux.Request{Target: "bench"}, agent, llmux.DefaultLimits(), nil)
+			result, err := execution.Run(context.Background(), &chat.Request{Target: "bench"}, agent, chat.DefaultLimits(), nil)
 			if err != nil {
 				panic(err)
 			}
 			keep = result
 		})
-		b.Run("chat/models", func(int) { keep = serve(handler, "/v1/models", nil, "GET") })
+		b.Run("chat/models", func(int) { keep = serve(handler, "/models", nil, "GET") })
 		b.Run("chat/parse", func(int) {
-			keep, _ = chat.ParseRequest(chatObject)
+			keep, _ = completions.ParseRequest(chatObject)
 		})
-		b.Run("chat/completion", func(int) { keep = serve(handler, "/v1/chat/completions", chatBody, "") })
+		b.Run("chat/completion", func(int) { keep = serve(handler, "/chat/completions", chatBody, "") })
 		b.Run("chat/stream", func(int) {
-			keep = serve(handler, "/v1/chat/completions", []byte(`{"model":"bench","stream":true,"messages":[{"role":"user","content":"hello"}]}`), "")
+			keep = serve(handler, "/chat/completions", []byte(`{"model":"bench","stream":true,"messages":[{"role":"user","content":"hello"}]}`), "")
 		})
 		b.Run("responses/parse", func(int) {
 			keep, _ = responses.ParseRequest(responsesObject)
 		})
-		b.Run("responses/http", func(int) { keep = serve(handler, "/v1/responses", responsesBody, "") })
+		b.Run("responses/http", func(int) { keep = serve(handler, "/responses", responsesBody, "") })
 		b.Run("responses/stream", func(int) {
-			keep = serve(handler, "/v1/responses", []byte(`{"model":"bench","stream":true,"input":"hello"}`), "")
+			keep = serve(handler, "/responses", []byte(`{"model":"bench","stream":true,"input":"hello"}`), "")
 		})
 		b.Run("anthropic/parse", func(int) {
 			keep, _ = anthropic.ParseRequest(anthropicObject)
 		})
-		b.Run("anthropic/http", func(int) { keep = serve(handler, "/v1/messages", anthropicBody, "anthropic-version: 2023-06-01") })
+		b.Run("anthropic/http", func(int) { keep = serve(handler, "/messages", anthropicBody, "anthropic-version: 2023-06-01") })
 		b.Run("anthropic/stream", func(int) {
-			keep = serve(handler, "/v1/messages", []byte(`{"model":"bench","stream":true,"max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`), "anthropic-version: 2023-06-01")
+			keep = serve(handler, "/messages", []byte(`{"model":"bench","stream":true,"max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`), "anthropic-version: 2023-06-01")
 		})
 		b.Run("audio/speech", func(int) {
-			keep = serve(handler, "/v1/audio/speech", []byte(`{"model":"bench","input":"hello","voice":"alloy"}`), "")
+			keep = serve(handler, "/audio/speech", []byte(`{"model":"bench","input":"hello","voice":"alloy"}`), "")
 		})
 		b.Run("audio/transcribe", func(int) { keep = serveTranscription(handler) })
 	}, bench.WithSamples(50), bench.WithDuration(10*time.Millisecond))
@@ -130,7 +131,7 @@ func serveTranscription(handler http.Handler) *httptest.ResponseRecorder {
 	if err := writer.Close(); err != nil {
 		panic(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	request := httptest.NewRequest(http.MethodPost, "/audio/transcriptions", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

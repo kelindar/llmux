@@ -7,7 +7,7 @@ import (
 	"errors"
 )
 
-// Transcriber is the optional service behind POST /v1/audio/transcriptions.
+// Transcriber is the optional service behind POST /audio/transcriptions.
 // It is deliberately separate from Agent because transcription does not have
 // conversational event semantics.
 type Transcriber interface {
@@ -56,7 +56,7 @@ type TranscriptSegment struct {
 	Text  string  `json:"text"`  // Transcript text for the segment.
 }
 
-// Speaker is the optional service behind POST /v1/audio/speech.
+// Speaker is the optional service behind POST /audio/speech.
 type Speaker interface {
 	// Speak synthesizes speech audio for the request text.
 	Speak(context.Context, SpeechRequest) (Speech, error)

@@ -7,23 +7,27 @@ import (
 	"net/http"
 
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
 )
 
 func main() {
-	agent := llmux.AgentFunc(func(_ context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
+	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		for _, part := range req.Input[0].Content {
-			if part.Type == llmux.PartImage && part.Media != nil {
-				return llmux.Outcome{}, llmux.EmitText(emit, fmt.Sprintf("received %s", part.Media.MIMEType))
+			if part.Type == chat.PartImage && part.Media != nil {
+				return chat.Outcome{}, emit(chat.Text(fmt.Sprintf("received %s", part.Media.MIMEType)))
 			}
 		}
-		return llmux.Outcome{}, llmux.EmitText(emit, "no image")
+		return chat.Outcome{}, emit(chat.Text("no image"))
 	})
-	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
-		return agent, llmux.Capabilities{InputModalities: llmux.ModalityText | llmux.ModalityImage}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityImage}, nil
 	})
 
-	log.Println("multimodal example listening on http://127.0.0.1:8080")
-	if err := http.ListenAndServe("127.0.0.1:8080", llmux.New(resolver)); err != nil {
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", http.StripPrefix("/v1", llmux.New(resolver)))
+
+	log.Println("multimodal example listening on http://127.0.0.1:8080 (POST /v1/chat/completions)")
+	if err := http.ListenAndServe("127.0.0.1:8080", mux); err != nil {
 		log.Fatal(err)
 	}
 }

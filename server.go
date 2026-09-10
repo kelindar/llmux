@@ -8,15 +8,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-)
 
-// Model is one optional catalog entry returned by GET /v1/models.
-type Model struct {
-	ID      string `json:"id"`       // Model identifier returned to clients.
-	Object  string `json:"object"`   // Object type; defaults to "model" when empty.
-	Created int64  `json:"created"`  // Unix creation time in seconds.
-	OwnedBy string `json:"owned_by"` // Owner label shown in the models list.
-}
+	"github.com/kelindar/llmux/chat"
+)
 
 // Option configures Handler. Options are applied once by New.
 type Option func(*Handler)
@@ -24,12 +18,12 @@ type Option func(*Handler)
 // Handler exposes configured agents through standard HTTP endpoints. It does
 // not create a listener and is safe for concurrent requests.
 type Handler struct {
-	resolver     Resolver
-	catalog      []Model
-	limits       Limits
-	assets       AssetResolver
-	continuation ContinuationStore
-	lifecycle    Lifecycle
+	resolver     chat.Resolver
+	catalog      []chat.Model
+	limits       chat.Limits
+	assets       chat.AssetResolver
+	continuation chat.ContinuationStore
+	lifecycle    chat.Lifecycle
 	storeDefault bool
 	transcriber  Transcriber
 	speaker      Speaker
@@ -37,8 +31,8 @@ type Handler struct {
 }
 
 // New builds a Handler with the given resolver and options.
-func New(resolver Resolver, options ...Option) *Handler {
-	h := &Handler{resolver: resolver, limits: DefaultLimits()}
+func New(resolver chat.Resolver, options ...Option) *Handler {
+	h := &Handler{resolver: resolver, limits: chat.DefaultLimits()}
 	for _, option := range options {
 		if option != nil {
 			option(h)
@@ -48,34 +42,30 @@ func New(resolver Resolver, options ...Option) *Handler {
 	return h
 }
 
-// NewHandler is an explicit spelling for callers that prefer constructor
-// names which describe the returned value.
-func NewHandler(resolver Resolver, options ...Option) *Handler { return New(resolver, options...) }
-
-// WithModels registers catalog entries for GET /v1/models.
-func WithModels(models ...Model) Option {
+// WithModels registers catalog entries for GET /models.
+func WithModels(models ...chat.Model) Option {
 	return func(h *Handler) {
-		h.catalog = append([]Model(nil), models...)
+		h.catalog = append([]chat.Model(nil), models...)
 	}
 }
 
 // WithLimits sets request, media, and output size limits for the handler.
-func WithLimits(limits Limits) Option { return func(h *Handler) { h.limits = limits } }
+func WithLimits(limits chat.Limits) Option { return func(h *Handler) { h.limits = limits } }
 
 // WithAssetResolver enables resolution of application-owned media references.
-func WithAssetResolver(resolver AssetResolver) Option {
+func WithAssetResolver(resolver chat.AssetResolver) Option {
 	return func(h *Handler) { h.assets = resolver }
 }
 
 // WithContinuationStore enables previous_response_id history loading.
 // Persistence of new turns is owned by Lifecycle.
-func WithContinuationStore(store ContinuationStore) Option {
+func WithContinuationStore(store chat.ContinuationStore) Option {
 	return func(h *Handler) { h.continuation = store }
 }
 
 // WithLifecycle enables application-owned response identity, idempotent
 // acceptance, and terminal persistence.
-func WithLifecycle(life Lifecycle) Option {
+func WithLifecycle(life chat.Lifecycle) Option {
 	return func(h *Handler) { h.lifecycle = life }
 }
 
@@ -87,12 +77,12 @@ func WithStoreDefault(retain bool) Option {
 	return func(h *Handler) { h.storeDefault = retain }
 }
 
-// WithTranscriber enables POST /v1/audio/transcriptions.
+// WithTranscriber enables POST /audio/transcriptions.
 func WithTranscriber(transcriber Transcriber) Option {
 	return func(h *Handler) { h.transcriber = transcriber }
 }
 
-// WithSpeaker enables POST /v1/audio/speech.
+// WithSpeaker enables POST /audio/speech.
 func WithSpeaker(speaker Speaker) Option { return func(h *Handler) { h.speaker = speaker } }
 
 // WithErrorLog lets an application observe operational failures without
@@ -102,77 +92,58 @@ func WithErrorLog(logf func(context.Context, error)) Option {
 	return func(h *Handler) { h.errorLog = logf }
 }
 
-// ServeHTTP routes supported protocol and audio endpoints. Paths may be mounted
-// under an application prefix (for example /api/v1/responses) without changing
-// protocol parsing; authentication remains outside llmux.
+// ServeHTTP routes supported protocol and audio endpoints at exact paths.
+// Mount under an application prefix with http.StripPrefix; authentication
+// remains outside llmux.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch routePath(r.URL.Path) {
-	case "/v1/chat/completions":
+	switch r.URL.Path {
+	case "/chat/completions":
 		if r.Method != http.MethodPost {
 			writeProtocolError(w, protocolChat, methodError(r.Method))
 			return
 		}
 		h.serveChat(w, r)
-	case "/v1/responses":
+	case "/responses":
 		if r.Method != http.MethodPost {
 			writeProtocolError(w, protocolResponses, methodError(r.Method))
 			return
 		}
 		h.serveResponses(w, r)
-	case "/v1/messages":
+	case "/messages":
 		if r.Method != http.MethodPost {
 			writeProtocolError(w, protocolAnthropic, methodError(r.Method))
 			return
 		}
 		h.serveMessages(w, r)
-	case "/v1/audio/transcriptions":
+	case "/audio/transcriptions":
 		if r.Method != http.MethodPost {
 			writeProtocolError(w, protocolChat, methodError(r.Method))
 			return
 		}
 		h.serveTranscription(w, r)
-	case "/v1/audio/speech":
+	case "/audio/speech":
 		if r.Method != http.MethodPost {
 			writeProtocolError(w, protocolChat, methodError(r.Method))
 			return
 		}
 		h.serveSpeech(w, r)
-	case "/v1/models":
+	case "/models":
 		if r.Method != http.MethodGet {
 			writeProtocolError(w, protocolChat, methodError(r.Method))
 			return
 		}
 		h.serveModels(w, r)
 	default:
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "not found"})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "not found"})
 	}
 }
 
-func routePath(path string) string {
-	endpoints := []string{
-		"/v1/chat/completions",
-		"/v1/responses",
-		"/v1/messages",
-		"/v1/audio/transcriptions",
-		"/v1/audio/speech",
-		"/v1/models",
-	}
-	for _, ep := range endpoints {
-		// Allow mounts under an application prefix (for example /api/v1/responses).
-		// Endpoints begin with '/', so a suffix match already enforces a path boundary.
-		if path == ep || strings.HasSuffix(path, ep) {
-			return ep
-		}
-	}
-	return path
-}
-
-func methodError(method string) *APIError {
-	return &APIError{Status: http.StatusMethodNotAllowed, Type: "invalid_request_error", Code: "method_not_allowed", Message: "method " + method + " is not allowed"}
+func methodError(method string) *chat.APIError {
+	return &chat.APIError{Status: http.StatusMethodNotAllowed, Type: "invalid_request_error", Code: "method_not_allowed", Message: "method " + method + " is not allowed"}
 }
 
 func (h *Handler) serveModels(w http.ResponseWriter, _ *http.Request) {
-	models := make([]Model, len(h.catalog))
+	models := make([]chat.Model, len(h.catalog))
 	copy(models, h.catalog)
 	for i := range models {
 		if models[i].Object == "" {
@@ -188,10 +159,10 @@ func (h *Handler) readBody(w http.ResponseWriter, r *http.Request, limit int64) 
 	}
 	data, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
-		return nil, &APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "body_read_failed", Message: "could not read request body", Err: err}
+		return nil, &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "body_read_failed", Message: "could not read request body", Err: err}
 	}
 	if int64(len(data)) > limit {
-		return nil, &APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large", Message: "request body exceeds the configured limit"}
+		return nil, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large", Message: "request body exceeds the configured limit"}
 	}
 	return data, nil
 }
@@ -267,37 +238,37 @@ func decodeStringSlice(object map[string]jsontext.Value, key string) ([]string, 
 	return values, nil
 }
 
-func fmtError(param, message string, err error) *APIError {
-	return &APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request", Param: param, Message: message, Err: err}
+func fmtError(param, message string, err error) *chat.APIError {
+	return &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request", Param: param, Message: message, Err: err}
 }
 
-func (h *Handler) resolve(ctx context.Context, target string) (Agent, Capabilities, error) {
+func (h *Handler) resolve(ctx context.Context, target string) (chat.Agent, chat.Capabilities, error) {
 	if h.resolver == nil {
-		return nil, Capabilities{}, errors.New("llmux: no agent resolver configured")
+		return nil, chat.Capabilities{}, errors.New("llmux: no agent resolver configured")
 	}
-	agent, capabilities, err := h.resolver.Resolve(ctx, target)
-	if err != nil {
-		return nil, Capabilities{}, err
-	}
-	if agent == nil {
-		return nil, Capabilities{}, errors.New("llmux: resolver returned a nil agent")
+	agent, capabilities, err := h.resolver(ctx, target)
+	switch {
+	case err != nil:
+		return nil, chat.Capabilities{}, err
+	case agent == nil:
+		return nil, chat.Capabilities{}, errors.New("llmux: resolver returned a nil agent")
 	}
 	return agent, capabilities.Normalize(), nil
 }
 
-func (h *Handler) prepareRequest(ctx context.Context, req *Request) error {
+func (h *Handler) prepareRequest(ctx context.Context, req *chat.Request) error {
 	if req.Turn == nil {
 		req.Turn = cloneItems(req.Input)
 	}
-	if req.Controls.PreviousResponseID != nil {
+	if req.Previous != nil {
 		if h.continuation == nil {
-			return Unsupported("previous_response_id", "continuation is not configured")
+			return chat.Unsupported("previous_response_id", "continuation is not configured")
 		}
-		prior, err := h.continuation.Load(ctx, *req.Controls.PreviousResponseID)
+		prior, err := h.continuation.Load(ctx, *req.Previous)
 		if err != nil {
-			return &APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "previous_response_not_found", Param: "previous_response_id", Message: "previous response was not found", Err: err}
+			return &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "previous_response_not_found", Param: "previous_response_id", Message: "previous response was not found", Err: err}
 		}
-		input := make([]Item, 0, len(prior)+len(req.Turn))
+		input := make([]chat.Item, 0, len(prior)+len(req.Turn))
 		for _, item := range prior {
 			input = append(input, item.Clone())
 		}
@@ -306,7 +277,7 @@ func (h *Handler) prepareRequest(ctx context.Context, req *Request) error {
 	}
 	h.applyStorePolicy(req)
 	if req.Retain && h.lifecycle == nil {
-		return Unsupported("store", "response persistence requires a Lifecycle")
+		return chat.Unsupported("store", "response persistence requires a Lifecycle")
 	}
 	if h.assets == nil {
 		return nil
@@ -321,18 +292,18 @@ func (h *Handler) prepareRequest(ctx context.Context, req *Request) error {
 }
 
 // applyStorePolicy sets Request.Retain from the wire store field and the
-// configured default without mutating Controls.Store.
-func (h *Handler) applyStorePolicy(req *Request) {
+// configured default without mutating Request.Store.
+func (h *Handler) applyStorePolicy(req *chat.Request) {
 	switch {
-	case req.Controls.Store != nil:
-		req.Retain = *req.Controls.Store
+	case req.Store != nil:
+		req.Retain = *req.Store
 	default:
 		req.Retain = h.storeDefault
 	}
 }
 
-func (h *Handler) resolveItemMedia(ctx context.Context, item *Item, count *int) error {
-	resolve := func(part *Part) error {
+func (h *Handler) resolveItemMedia(ctx context.Context, item *chat.Item, count *int) error {
+	resolve := func(part *chat.Part) error {
 		if part.Media == nil || (part.Media.URL == "" && part.Media.Ref == "") {
 			return nil
 		}
@@ -340,9 +311,9 @@ func (h *Handler) resolveItemMedia(ctx context.Context, item *Item, count *int) 
 		if *count > h.limits.MaxAssets {
 			return fmtError("input", "too many media assets", nil)
 		}
-		media, err := h.assets.Resolve(ctx, *part.Media, h.limits.MaxMediaBytes)
+		media, err := h.assets(ctx, *part.Media, h.limits.MaxMediaBytes)
 		if err != nil {
-			return &APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "asset_resolution_failed", Param: "input", Message: "could not resolve media asset", Err: err}
+			return &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "asset_resolution_failed", Param: "input", Message: "could not resolve media asset", Err: err}
 		}
 		part.Media = &media
 		return nil
@@ -360,54 +331,54 @@ func (h *Handler) resolveItemMedia(ctx context.Context, item *Item, count *int) 
 	return nil
 }
 
-func (h *Handler) validateRequest(req *Request, caps Capabilities) error {
+func (h *Handler) validateRequest(req *chat.Request, caps chat.Capabilities) error {
 	if strings.TrimSpace(req.Target) == "" {
-		return Invalid("model", "model is required")
+		return chat.Invalid("model", "model is required")
 	}
 	caps = caps.Normalize()
 	switch {
-	case req.Controls.MaxOutputTokens != nil && !caps.GenerationControls.Has(ControlMaxOutputTokens):
-		return Unsupported("max_output_tokens", "selected agent does not support max output tokens")
-	case req.Controls.Temperature != nil && !caps.GenerationControls.Has(ControlTemperature):
-		return Unsupported("temperature", "selected agent does not support temperature")
-	case req.Controls.TopP != nil && !caps.GenerationControls.Has(ControlTopP):
-		return Unsupported("top_p", "selected agent does not support top_p")
-	case req.Controls.Stop != nil && !caps.GenerationControls.Has(ControlStop):
-		return Unsupported("stop", "selected agent does not support stop sequences")
-	case req.Controls.ParallelToolCall != nil && !caps.GenerationControls.Has(ControlParallelToolCalls):
-		return Unsupported("parallel_tool_calls", "selected agent does not support parallel tool calls")
-	case req.Controls.PreviousResponseID != nil && !caps.Continuation:
-		return Unsupported("previous_response_id", "selected agent does not support continuation")
-	case req.Controls.Store != nil && *req.Controls.Store && !caps.Continuation:
-		return Unsupported("store", "selected agent does not support continuation")
+	case req.Controls.MaxOutputTokens != nil && !caps.GenerationControls.Has(chat.ControlMaxOutputTokens):
+		return chat.Unsupported("max_output_tokens", "selected agent does not support max output tokens")
+	case req.Controls.Temperature != nil && !caps.GenerationControls.Has(chat.ControlTemperature):
+		return chat.Unsupported("temperature", "selected agent does not support temperature")
+	case req.Controls.TopP != nil && !caps.GenerationControls.Has(chat.ControlTopP):
+		return chat.Unsupported("top_p", "selected agent does not support top_p")
+	case req.Controls.Stop != nil && !caps.GenerationControls.Has(chat.ControlStop):
+		return chat.Unsupported("stop", "selected agent does not support stop sequences")
+	case req.Controls.ParallelToolCall != nil && !caps.GenerationControls.Has(chat.ControlParallelToolCalls):
+		return chat.Unsupported("parallel_tool_calls", "selected agent does not support parallel tool calls")
+	case req.Previous != nil && !caps.Continuation:
+		return chat.Unsupported("previous_response_id", "selected agent does not support continuation")
+	case req.Store != nil && *req.Store && !caps.Continuation:
+		return chat.Unsupported("store", "selected agent does not support continuation")
 	}
 	assets := 0
-	checkPart := func(part Part) error {
+	checkPart := func(part chat.Part) error {
 		if part.Media != nil {
 			assets++
 			if assets > h.limits.MaxAssets {
-				return Invalid("input", "too many media assets")
+				return chat.Invalid("input", "too many media assets")
 			}
 		}
 		switch part.Type {
-		case PartImage:
-			if !caps.InputModalities.Has(ModalityImage) {
-				return Unsupported("input", "selected agent does not accept image input")
+		case chat.PartImage:
+			if !caps.InputModalities.Has(chat.ModalityImage) {
+				return chat.Unsupported("input", "selected agent does not accept image input")
 			}
-		case PartAudio:
-			if !caps.InputModalities.Has(ModalityAudio) {
-				return Unsupported("input", "selected agent does not accept audio input")
+		case chat.PartAudio:
+			if !caps.InputModalities.Has(chat.ModalityAudio) {
+				return chat.Unsupported("input", "selected agent does not accept audio input")
 			}
-		case PartFile:
-			if !caps.InputModalities.Has(ModalityFile) {
-				return Unsupported("input", "selected agent does not accept file input")
+		case chat.PartFile:
+			if !caps.InputModalities.Has(chat.ModalityFile) {
+				return chat.Unsupported("input", "selected agent does not accept file input")
 			}
 		}
 		return nil
 	}
 	for _, item := range req.Input {
 		if err := item.Validate(h.limits.MaxMediaBytes, false); err != nil {
-			return Invalid("input", err.Error())
+			return chat.Invalid("input", err.Error())
 		}
 		for _, part := range item.Content {
 			if err := checkPart(part); err != nil {
@@ -422,23 +393,23 @@ func (h *Handler) validateRequest(req *Request, caps Capabilities) error {
 	}
 	if len(req.Controls.Tools) > 0 {
 		if !caps.Tools {
-			return Unsupported("tools", "selected agent does not accept tools")
+			return chat.Unsupported("tools", "selected agent does not accept tools")
 		}
 		for _, tool := range req.Controls.Tools {
 			if err := tool.Validate(); err != nil {
-				return Invalid("tools", err.Error())
+				return chat.Invalid("tools", err.Error())
 			}
 		}
 	}
 	if req.Controls.ToolChoice != nil {
 		if err := req.Controls.ToolChoice.Validate(); err != nil {
-			return Invalid("tool_choice", err.Error())
+			return chat.Invalid("tool_choice", err.Error())
 		}
 		if len(req.Controls.Tools) == 0 {
 			switch req.Controls.ToolChoice.Mode {
 			case "auto", "none":
 			default:
-				return Invalid("tool_choice", "tool_choice requires tools")
+				return chat.Invalid("tool_choice", "tool_choice requires tools")
 			}
 		} else if req.Controls.ToolChoice.Mode == "function" {
 			found := false
@@ -449,168 +420,159 @@ func (h *Handler) validateRequest(req *Request, caps Capabilities) error {
 				}
 			}
 			if !found {
-				return Invalid("tool_choice", "selected function is not declared in tools")
+				return chat.Invalid("tool_choice", "selected function is not declared in tools")
 			}
 		}
 	}
-	if req.Controls.Structured != nil {
+	if req.Output.Format.IsStructured() {
 		if !caps.StructuredOutput {
-			return Unsupported("text.format", "selected agent does not support structured output")
+			return chat.Unsupported("text.format", "selected agent does not support structured output")
 		}
-		if err := req.Controls.Structured.Validate(); err != nil {
-			return Invalid("text.format", err.Error())
+		if err := req.Output.Format.Validate(); err != nil {
+			return chat.Invalid("text.format", err.Error())
 		}
 	}
 	if req.Controls.Reasoning != nil {
 		if err := req.Controls.Reasoning.Validate(); err != nil {
-			return Invalid("reasoning", err.Error())
+			return chat.Invalid("reasoning", err.Error())
 		}
 		switch {
-		case !caps.GenerationControls.Has(ControlReasoning):
-			return Unsupported("reasoning", "selected agent does not support reasoning controls")
+		case !caps.GenerationControls.Has(chat.ControlReasoning):
+			return chat.Unsupported("reasoning", "selected agent does not support reasoning controls")
 		case req.Controls.Reasoning.Summary && !caps.ReasoningSummary:
-			return Unsupported("reasoning.summary", "selected agent does not provide reasoning summaries")
+			return chat.Unsupported("reasoning.summary", "selected agent does not provide reasoning summaries")
 		}
 	}
 	if req.Controls.Audio != nil {
 		if err := req.Controls.Audio.Validate(); err != nil {
-			return Invalid("audio", err.Error())
+			return chat.Invalid("audio", err.Error())
 		}
-		if !caps.GenerationControls.Has(ControlAudio) {
-			return Unsupported("audio", "selected agent does not support audio controls")
+		if !caps.GenerationControls.Has(chat.ControlAudio) {
+			return chat.Unsupported("audio", "selected agent does not support audio controls")
 		}
 	}
 	for key := range req.Controls.Extensions {
 		if !caps.Extensions[key] {
-			return Unsupported(key, "selected agent does not support this extension")
+			return chat.Unsupported(key, "selected agent does not support this extension")
 		}
 	}
 	if req.Output.Modalities == 0 {
-		req.Output.Modalities = ModalityText
+		req.Output.Modalities = chat.ModalityText
 	}
 	switch {
 	case req.Controls.ImageGeneration && !caps.ImageGeneration:
-		return Unsupported("tools", "selected agent does not support image generation")
+		return chat.Unsupported("tools", "selected agent does not support image generation")
 	case !caps.OutputModalities.Has(req.Output.Modalities):
-		return Unsupported("modalities", "selected agent does not provide the requested output modalities")
-	case len(req.Output.Schema) > 0 && !req.Output.Schema.IsValid():
-		return Invalid("response_format", "schema must be valid JSON")
+		return chat.Unsupported("modalities", "selected agent does not provide the requested output modalities")
+	case req.Output.Format.Kind == chat.FormatJSONSchema && len(req.Output.Format.Schema) > 0 && !req.Output.Format.Schema.IsValid():
+		return chat.Invalid("response_format", "schema must be valid JSON")
 	}
 	return nil
 }
 
-func validateOutputEvent(event Event, caps Capabilities) error {
+func validateOutputEvent(event chat.Event, caps chat.Capabilities) error {
 	caps = caps.Normalize()
-	checkPart := func(part Part) error {
+	checkPart := func(part chat.Part) error {
 		switch part.Type {
-		case PartText:
-			if !caps.OutputModalities.Has(ModalityText) {
-				return Unsupported("output", "selected agent does not provide text output")
+		case chat.PartText:
+			if !caps.OutputModalities.Has(chat.ModalityText) {
+				return chat.Unsupported("output", "selected agent does not provide text output")
 			}
-		case PartImage:
-			if !caps.OutputModalities.Has(ModalityImage) {
-				return Unsupported("output", "selected agent does not provide image output")
+		case chat.PartImage:
+			if !caps.OutputModalities.Has(chat.ModalityImage) {
+				return chat.Unsupported("output", "selected agent does not provide image output")
 			}
-		case PartAudio:
-			if !caps.OutputModalities.Has(ModalityAudio) {
-				return Unsupported("output", "selected agent does not provide audio output")
+		case chat.PartAudio:
+			if !caps.OutputModalities.Has(chat.ModalityAudio) {
+				return chat.Unsupported("output", "selected agent does not provide audio output")
 			}
-		case PartFile:
-			if !caps.OutputModalities.Has(ModalityFile) {
-				return Unsupported("output", "selected agent does not provide file output")
+		case chat.PartFile:
+			if !caps.OutputModalities.Has(chat.ModalityFile) {
+				return chat.Unsupported("output", "selected agent does not provide file output")
 			}
 		}
 		return nil
 	}
-	checkItem := func(item Item) error {
+	checkItem := func(item chat.Item) error {
 		switch item.Type {
-		case ItemMessage, ItemMedia:
+		case chat.ItemMessage, chat.ItemMedia:
 			for _, part := range item.Content {
 				if err := checkPart(part); err != nil {
 					return err
 				}
 			}
-		case ItemFunctionCall:
+		case chat.ItemFunctionCall:
 			if !caps.ClientTools {
-				return Unsupported("tools", "selected agent does not hand tool calls to the client")
+				return chat.Unsupported("tools", "selected agent does not hand tool calls to the client")
 			}
-		case ItemFunctionCallOutput:
+		case chat.ItemFunctionCallOutput:
 			for _, part := range item.Output {
 				if err := checkPart(part); err != nil {
 					return err
 				}
 			}
-		case ItemReasoning:
+		case chat.ItemReasoning:
 			if !caps.ReasoningSummary {
-				return Unsupported("output", "selected agent does not provide reasoning summaries")
+				return chat.Unsupported("output", "selected agent does not provide reasoning summaries")
 			}
 		}
 		return nil
 	}
 	switch event.Type {
-	case EventMessage, EventMedia, EventItem, EventReasoning:
-		if event.Type == EventMedia {
-			return checkPart(event.Part)
-		}
+	case chat.EventItem:
 		return checkItem(event.Item)
-	case EventTextDelta:
-		if !caps.OutputModalities.Has(ModalityText) {
-			return Unsupported("output", "selected agent does not provide text output")
+	case chat.EventTextDelta:
+		if !caps.OutputModalities.Has(chat.ModalityText) {
+			return chat.Unsupported("output", "selected agent does not provide text output")
 		}
-	case EventToolCall, EventToolCallStart, EventToolCallDelta, EventToolCallDone:
+	case chat.EventToolCallStart, chat.EventToolCallDelta, chat.EventToolCallDone:
 		if !caps.ClientTools {
-			return Unsupported("tools", "selected agent does not hand tool calls to the client")
+			return chat.Unsupported("tools", "selected agent does not hand tool calls to the client")
 		}
 	}
 	return nil
 }
 
-func requiresImageGeneration(event Event) bool {
-	if event.Type == EventMedia {
-		return event.Part.Type == PartImage
-	}
-	if event.Type == EventItem {
-		return event.Item.Type == ItemMedia && len(event.Item.Content) == 1 && event.Item.Content[0].Type == PartImage
-	}
-	return false
+func requiresImageGeneration(event chat.Event) bool {
+	return event.Type == chat.EventItem &&
+		event.Item.Type == chat.ItemMedia &&
+		len(event.Item.Content) == 1 &&
+		event.Item.Content[0].Type == chat.PartImage
 }
 
-func requiresReasoningSummary(event Event) bool {
-	if event.Type == EventReasoning {
-		return true
-	}
-	return event.Type == EventItem && event.Item.Type == ItemReasoning
+func requiresReasoningSummary(event chat.Event) bool {
+	return event.Type == chat.EventItem && event.Item.Type == chat.ItemReasoning
 }
 
-func validateRequestedOutput(event Event, modalities Modality) error {
-	checkPart := func(part Part) error {
-		var modality Modality
+func validateRequestedOutput(event chat.Event, modalities chat.Modality) error {
+	checkPart := func(part chat.Part) error {
+		var modality chat.Modality
 		switch part.Type {
-		case PartText:
-			modality = ModalityText
-		case PartImage:
-			modality = ModalityImage
-		case PartAudio:
-			modality = ModalityAudio
-		case PartFile:
-			modality = ModalityFile
+		case chat.PartText:
+			modality = chat.ModalityText
+		case chat.PartImage:
+			modality = chat.ModalityImage
+		case chat.PartAudio:
+			modality = chat.ModalityAudio
+		case chat.PartFile:
+			modality = chat.ModalityFile
 		default:
 			return nil
 		}
 		if !modalities.Has(modality) {
-			return Unsupported("modalities", "agent emitted an output modality that was not requested")
+			return chat.Unsupported("modalities", "agent emitted an output modality that was not requested")
 		}
 		return nil
 	}
-	checkItem := func(item Item) error {
+	checkItem := func(item chat.Item) error {
 		switch item.Type {
-		case ItemMessage, ItemMedia:
+		case chat.ItemMessage, chat.ItemMedia:
 			for _, part := range item.Content {
 				if err := checkPart(part); err != nil {
 					return err
 				}
 			}
-		case ItemFunctionCallOutput:
+		case chat.ItemFunctionCallOutput:
 			for _, part := range item.Output {
 				if err := checkPart(part); err != nil {
 					return err
@@ -620,12 +582,10 @@ func validateRequestedOutput(event Event, modalities Modality) error {
 		return nil
 	}
 	switch event.Type {
-	case EventMessage, EventItem:
+	case chat.EventItem:
 		return checkItem(event.Item)
-	case EventMedia:
-		return checkPart(event.Part)
-	case EventTextDelta:
-		return checkPart(TextPart(event.Delta))
+	case chat.EventTextDelta:
+		return checkPart(chat.TextPart(event.Delta))
 	}
 	return nil
 }

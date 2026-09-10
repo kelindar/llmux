@@ -7,15 +7,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRouteBodyErrors(t *testing.T) {
-	agent := AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, errors.New("unreachable")
+	agent := chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, errors.New("unreachable")
 	})
-	handler := testHandler(agent, Capabilities{}, WithLimits(Limits{MaxRequestBytes: 8}))
+	handler := testHandler(agent, chat.Capabilities{}, WithLimits(chat.Limits{MaxRequestBytes: 8}))
 
 	cases := []struct {
 		name    string
@@ -23,9 +24,9 @@ func TestRouteBodyErrors(t *testing.T) {
 		body    string
 		headers map[string]string
 	}{
-		{name: "chat", path: "/v1/chat/completions", body: strings.Repeat("x", 32)},
-		{name: "responses", path: "/v1/responses", body: strings.Repeat("x", 32)},
-		{name: "anthropic", path: "/v1/messages", body: strings.Repeat("x", 32), headers: map[string]string{"anthropic-version": "2023-06-01"}},
+		{name: "chat", path: "/chat/completions", body: strings.Repeat("x", 32)},
+		{name: "responses", path: "/responses", body: strings.Repeat("x", 32)},
+		{name: "anthropic", path: "/messages", body: strings.Repeat("x", 32), headers: map[string]string{"anthropic-version": "2023-06-01"}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,19 +44,19 @@ func TestRouteBodyErrors(t *testing.T) {
 }
 
 func TestRouteInvalidJSON(t *testing.T) {
-	agent := AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, errors.New("unreachable")
+	agent := chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, errors.New("unreachable")
 	})
-	handler := testHandler(agent, Capabilities{})
+	handler := testHandler(agent, chat.Capabilities{})
 
 	cases := []struct {
 		name    string
 		path    string
 		headers map[string]string
 	}{
-		{name: "chat", path: "/v1/chat/completions"},
-		{name: "responses", path: "/v1/responses"},
-		{name: "anthropic", path: "/v1/messages", headers: map[string]string{"anthropic-version": "2023-06-01"}},
+		{name: "chat", path: "/chat/completions"},
+		{name: "responses", path: "/responses"},
+		{name: "anthropic", path: "/messages", headers: map[string]string{"anthropic-version": "2023-06-01"}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -66,19 +67,44 @@ func TestRouteInvalidJSON(t *testing.T) {
 }
 
 func TestAnthropicVersionRequired(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, errors.New("unreachable")
-	}), Capabilities{})
-	recorder := postJSON(t, handler, "/v1/messages", `{"model":"agent/basic","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, errors.New("unreachable")
+	}), chat.Capabilities{})
+	recorder := postJSON(t, handler, "/messages", `{"model":"agent/basic","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	body := decodeResponse(t, recorder)
 	assert.Equal(t, "error", body["type"])
 }
 
+func TestDirectMount(t *testing.T) {
+	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("ok"))
+	}), chat.Capabilities{})
+	recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
+	require.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestStripPrefixMount(t *testing.T) {
+	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("ok"))
+	}), chat.Capabilities{})
+	mounted := http.StripPrefix("/v1", handler)
+	recorder := postJSON(t, mounted, "/v1/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
+	require.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestWrongPrefix404(t *testing.T) {
+	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	}), chat.Capabilities{})
+	recorder := postJSON(t, handler, "/v1/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+}
+
 func TestRouteParseErrors(t *testing.T) {
-	handler := testHandler(AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, errors.New("unreachable")
-	}), Capabilities{})
+	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, errors.New("unreachable")
+	}), chat.Capabilities{})
 
 	cases := []struct {
 		name    string
@@ -86,9 +112,9 @@ func TestRouteParseErrors(t *testing.T) {
 		body    string
 		headers map[string]string
 	}{
-		{name: "chat", path: "/v1/chat/completions", body: `{"model":"agent/basic"}`},
-		{name: "responses", path: "/v1/responses", body: `{"model":"agent/basic"}`},
-		{name: "anthropic", path: "/v1/messages", body: `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, headers: map[string]string{"anthropic-version": "2023-06-01"}},
+		{name: "chat", path: "/chat/completions", body: `{"model":"agent/basic"}`},
+		{name: "responses", path: "/responses", body: `{"model":"agent/basic"}`},
+		{name: "anthropic", path: "/messages", body: `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, headers: map[string]string{"anthropic-version": "2023-06-01"}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

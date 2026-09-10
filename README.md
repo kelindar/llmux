@@ -6,7 +6,7 @@ an LLM proxy: your `Agent` runs directly in the process and does not need an
 upstream HTTP API.
 
 The root package is the convenient application entry point. The canonical
-contract is also available as `github.com/kelindar/llmux/contract`; protocol
+agent contract is also available as `github.com/kelindar/llmux/chat`; protocol
 code and execution machinery are kept under `internal/`.
 
 ## Quick start
@@ -18,15 +18,25 @@ go get github.com/kelindar/llmux
 
 
 ```go
-agent := llmux.AgentFunc(func(ctx context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
-	return llmux.Outcome{}, llmux.EmitText(emit, "hello")
+import (
+	"context"
+	"net/http"
+
+	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
+)
+
+agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+	return chat.Outcome{}, emit(chat.Text("hello"))
 })
 
-resolver := llmux.ResolverFunc(func(ctx context.Context, target string) (llmux.Agent, llmux.Capabilities, error) {
-	return agent, llmux.Capabilities{}, nil
+resolver := chat.Resolver(func(ctx context.Context, target string) (chat.Agent, chat.Capabilities, error) {
+	return agent, chat.Capabilities{}, nil
 })
 
-http.ListenAndServe(":8080", llmux.New(resolver))
+mux := http.NewServeMux()
+mux.Handle("/v1/", http.StripPrefix("/v1", llmux.New(resolver)))
+http.ListenAndServe(":8080", mux)
 ```
 
 Mount `llmux.New(resolver)` in an existing `net/http` server to retain the
@@ -36,7 +46,14 @@ does not open a listener.
 `Agent.Run` is called once per accepted request. All output is emitted through
 the ordered, backpressure-aware `Emit` callback; returning from `Run` closes
 emission. `Emit` is serial by contract, and a concurrent call returns
-`llmux.ErrConcurrentEmit`. Agents should stop when `Emit` returns an error.
+`chat.ErrConcurrentEmit`. Agents should stop when `Emit` returns an error.
+
+Complete output is emitted with constructors such as `chat.Text`,
+`chat.Tool`, and `chat.MediaItem`. Streaming uses
+`chat.TextDelta` / `chat.TextDone(itemID)` and
+`chat.ToolStart` / `chat.ToolDelta` / `chat.ToolDone(callID)`.
+Done events are closure signals; final text and tool arguments come from
+execution's accumulated state.
 
 ```go
 type Agent interface {
@@ -46,20 +63,33 @@ type Agent interface {
 type Emit func(Event) error
 ```
 
+These types live in `github.com/kelindar/llmux/chat`. The root `llmux`
+package provides the HTTP handler, options, routing, and thin audio service
+aliases used by `WithTranscriber` / `WithSpeaker`.
+
 The handler owns protocol indexes, event completion, and response envelopes.
 By default it also assigns response IDs. With `Lifecycle`, the application
 supplies identity and persistence; see below.
 
 ## Endpoints
 
-| Endpoint | Protocol | Supported surface |
+The handler matches exact paths. Mount it under a prefix with
+`http.StripPrefix` (for example `/v1` or `/api/v1`).
+
+| Path | Protocol | Supported surface |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | Text, image/file/audio input, text/audio output, client function calls, structured output, serial streaming |
-| `POST /v1/responses` | Open Responses with an OpenAI Responses compatibility profile | Text/image/file/function/reasoning input, text/function/reasoning/generated-image output, typed OpenAI-style streaming |
-| `POST /v1/messages` | Anthropic Messages | Text/image/document/file input, tool use/results, Anthropic message streaming |
-| `GET /v1/models` | OpenAI model catalog shape | Enabled when `WithModels` is supplied; an empty list is returned otherwise |
-| `POST /v1/audio/transcriptions` | OpenAI-compatible audio transcription | Enabled only with `WithTranscriber` |
-| `POST /v1/audio/speech` | OpenAI-compatible speech | Enabled only with `WithSpeaker`; binary audio or typed audio SSE |
+| `POST /chat/completions` | OpenAI Chat Completions | Text, image/file/audio input, text/audio output, client function calls, structured output, serial streaming |
+| `POST /responses` | Open Responses with an OpenAI Responses compatibility profile | Text/image/file/function/reasoning input, text/function/reasoning/generated-image output, typed OpenAI-style streaming |
+| `POST /messages` | Anthropic Messages | Text/image/document/file input, tool use/results, Anthropic message streaming |
+| `GET /models` | OpenAI model catalog shape | Enabled when `WithModels` is supplied; an empty list is returned otherwise |
+| `POST /audio/transcriptions` | OpenAI-compatible audio transcription | Enabled only with `WithTranscriber` |
+| `POST /audio/speech` | OpenAI-compatible speech | Enabled only with `WithSpeaker`; binary audio or typed audio SSE |
+
+Typical mount for OpenAI-compatible clients:
+
+```go
+mux.Handle("/v1/", http.StripPrefix("/v1", llmux.New(resolver)))
+```
 
 Unsupported recognized features return a protocol error instead of being
 silently ignored. The Responses route is intentionally a documented subset,
@@ -76,9 +106,9 @@ Responses use `data: [DONE]`; Anthropic uses `message_stop`; speech SSE uses
 The resolver returns both an agent and its declarations:
 
 ```go
-llmux.Capabilities{
-	InputModalities:  llmux.ModalityText | llmux.ModalityImage,
-	OutputModalities: llmux.ModalityText | llmux.ModalityImage,
+chat.Capabilities{
+	InputModalities:  chat.ModalityText | chat.ModalityImage,
+	OutputModalities: chat.ModalityText | chat.ModalityImage,
 	Tools:            true,
 	ClientTools:      true,
 }
@@ -145,14 +175,15 @@ parent reference — do not rewrite full history each turn.
 Metadata from the accepted request is cloned into `ResponseState` and reused
 for replay/retrieval; a retry's metadata does not replace the original.
 
-Mount under an application prefix (`/api/v1/responses` works). Use
+Mount under an application prefix with `http.StripPrefix` (for example
+`mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))`). Use
 `ResponsesBody` for GET retrieval so creation, replay, and retrieval share one
 encoder.
 
 ### Activity events
 
 Enable per request with `Acceptance.Activity` after inspecting application
-headers or extensions. Emit with `ActivityEvent(name, json)` — Responses
+headers or extensions. Emit with `chat.Activity(name, json)` — Responses
 streams `response.activity.<name>` with a bounded JSON payload. Activity is
 never assistant output or continuation history, and is not translated to Chat
 or Anthropic. Keep application-specific response fields outside the standard

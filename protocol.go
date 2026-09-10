@@ -2,15 +2,20 @@ package llmux
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/anthropic"
-	"github.com/kelindar/llmux/internal/chat"
+	completions "github.com/kelindar/llmux/internal/completions"
 	"github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
 	"github.com/kelindar/llmux/internal/responses"
+	"github.com/rs/xid"
 )
+
+func newID() string { return xid.New().String() }
 
 type protocol = internalprotocol.Kind
 
@@ -28,7 +33,7 @@ type streamEncoder = internalprotocol.StreamEncoder
 func adapterFor(p protocol) protocolAdapter {
 	switch p {
 	case protocolChat:
-		return chat.NewAdapter()
+		return completions.NewAdapter()
 	case protocolResponses:
 		return responses.NewAdapter()
 	case protocolAnthropic:
@@ -40,7 +45,7 @@ func adapterFor(p protocol) protocolAdapter {
 
 type sseWriter struct {
 	w       http.ResponseWriter
-	limits  Limits
+	limits  chat.Limits
 	inner   *internalprotocol.SSEWriter
 	started bool
 }
@@ -83,9 +88,11 @@ func writeProtocolError(w http.ResponseWriter, p protocol, err error) {
 	internalprotocol.WriteError(w, p, err)
 }
 
-func asAPIError(err error) *APIError { return internalprotocol.AsAPIError(err) }
+func asAPIError(err error) *chat.APIError { return internalprotocol.AsAPIError(err) }
 
-func anthropicErrorType(err *APIError) string { return internalprotocol.AnthropicErrorType(err) }
+func anthropicErrorType(err *chat.APIError) string {
+	return internalprotocol.AnthropicErrorType(err)
+}
 
 func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed parsedRequest) {
 	agent, capabilities, err := h.resolve(r.Context(), parsed.Request.Target)
@@ -119,13 +126,13 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		Created:  acceptance.Created,
 		Model:    parsed.Request.Target,
 		Activity: acceptance.Activity,
-		State: ResponseState{
-			Metadata: CloneMetadata(parsed.Request.Controls.Metadata),
+		State: chat.ResponseState{
+			Metadata: chat.CloneMetadata(parsed.Request.Metadata),
 			Store:    parsed.Request.Retain,
 		},
 	}
 	if meta.ID == "" {
-		meta.ID = newID(responsePrefix(parsed.Kind))
+		meta.ID = newID()
 	}
 	if meta.Created == 0 {
 		meta.Created = unixNow()
@@ -134,19 +141,19 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	acceptance.Created = meta.Created
 
 	adapter := adapterFor(parsed.Kind)
-	validateEvent := func(event Event) error {
+	validateEvent := func(event chat.Event) error {
 		switch {
 		case parsed.Kind == protocolResponses && requiresImageGeneration(event) && !parsed.Request.Controls.ImageGeneration:
-			return Unsupported("output", "image output requires the Responses image_generation tool")
+			return chat.Unsupported("output", "image output requires the Responses image_generation tool")
 		case requiresReasoningSummary(event) && (parsed.Request.Controls.Reasoning == nil || !parsed.Request.Controls.Reasoning.Summary):
-			return Unsupported("reasoning.summary", "reasoning summary output was not requested")
-		case event.Type == EventActivity && !acceptance.Activity:
-			return Unsupported("output", "activity events were not enabled for this request")
+			return chat.Unsupported("reasoning.summary", "reasoning summary output was not requested")
+		case event.Type == chat.EventActivity && !acceptance.Activity:
+			return chat.Unsupported("output", "activity events were not enabled for this request")
 		}
 		if err := adapter.ValidateEvent(event); err != nil {
 			return err
 		}
-		if event.Type == EventActivity {
+		if event.Type == chat.EventActivity {
 			return nil
 		}
 		if err := validateOutputEvent(event, capabilities); err != nil {
@@ -179,24 +186,22 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	h.serveOrdinary(w, r, parsed, agent, adapter, meta, acceptance, runCtx, validateEvent)
 }
 
-func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (Acceptance, bool, error) {
+func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Acceptance, bool, error) {
 	if h.lifecycle == nil {
-		return Acceptance{}, false, nil
+		return chat.Acceptance{}, false, nil
 	}
-	accepted, err := h.lifecycle.Accept(r.Context(), &TurnRequest{
+	accepted, err := h.lifecycle.Accept(r.Context(), &chat.TurnRequest{
 		Request:        &parsed.Request,
 		Stream:         parsed.Stream,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
-		Store:          parsed.Request.Controls.Store,
-		Retain:         parsed.Request.Retain,
 	})
 	if err != nil {
-		return Acceptance{}, true, err
+		return chat.Acceptance{}, true, err
 	}
 	return accepted, true, nil
 }
 
-func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state ResponseState) {
+func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state chat.ResponseState) {
 	meta.State = state
 	result := execution.Result{
 		Items:   cloneItems(state.Output),
@@ -205,7 +210,7 @@ func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapt
 	if parsed.Stream {
 		stream := adapter.Stream(w, parsed.Request, &meta, h.limits)
 		for _, item := range result.Items {
-			if err := stream.Event(OutputItem(item)); err != nil {
+			if err := stream.Event(chat.OutputItem(item)); err != nil {
 				h.logError(context.Background(), err)
 				if stream.Started() {
 					_ = stream.Fail(err)
@@ -237,16 +242,16 @@ func (h *Handler) serveStream(
 	w http.ResponseWriter,
 	r *http.Request,
 	parsed parsedRequest,
-	agent Agent,
+	agent chat.Agent,
 	adapter protocolAdapter,
 	meta responseMeta,
-	acceptance Acceptance,
+	acceptance chat.Acceptance,
 	runCtx context.Context,
-	validateEvent func(Event) error,
+	validateEvent func(chat.Event) error,
 ) {
 	stream := adapter.Stream(w, parsed.Request, &meta, h.limits)
 	delivering := true
-	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event Event) error {
+	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event chat.Event) error {
 		if err := validateEvent(event); err != nil {
 			return err
 		}
@@ -254,7 +259,7 @@ func (h *Handler) serveStream(
 			return nil
 		}
 		if err := stream.Event(event); err != nil {
-			if acceptance.Durable && IsDelivery(err) {
+			if acceptance.Durable && errors.Is(err, chat.ErrDelivery) {
 				delivering = false
 				return nil
 			}
@@ -301,14 +306,14 @@ func (h *Handler) serveOrdinary(
 	w http.ResponseWriter,
 	r *http.Request,
 	parsed parsedRequest,
-	agent Agent,
+	agent chat.Agent,
 	adapter protocolAdapter,
 	meta responseMeta,
-	acceptance Acceptance,
+	acceptance chat.Acceptance,
 	runCtx context.Context,
-	validateEvent func(Event) error,
+	validateEvent func(chat.Event) error,
 ) {
-	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event Event) error {
+	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event chat.Event) error {
 		return validateEvent(event)
 	})
 	state := buildResponseState(&parsed.Request, meta, result, runErr)
@@ -335,10 +340,10 @@ func (h *Handler) serveOrdinary(
 
 func (h *Handler) finalizeTurn(
 	runCtx context.Context,
-	acceptance Acceptance,
+	acceptance chat.Acceptance,
 	parsed parsedRequest,
 	meta responseMeta,
-	state ResponseState,
+	state chat.ResponseState,
 	runErr error,
 ) error {
 	if h.lifecycle == nil {
@@ -348,7 +353,7 @@ func (h *Handler) finalizeTurn(
 	if acceptance.Finalize != nil {
 		ctx = acceptance.Finalize
 	}
-	return h.lifecycle.Finalize(ctx, &TurnResult{
+	return h.lifecycle.Finalize(ctx, &chat.TurnResult{
 		ID:      meta.ID,
 		Created: meta.Created,
 		Request: &parsed.Request,
@@ -358,39 +363,39 @@ func (h *Handler) finalizeTurn(
 	})
 }
 
-func buildResponseState(req *Request, meta responseMeta, result execution.Result, runErr error) ResponseState {
-	state := ResponseState{
+func buildResponseState(req *chat.Request, meta responseMeta, result execution.Result, runErr error) chat.ResponseState {
+	state := chat.ResponseState{
 		Output:      cloneItems(result.Items),
 		Usage:       result.Outcome.Usage,
-		Metadata:    CloneMetadata(meta.State.Metadata),
+		Metadata:    chat.CloneMetadata(meta.State.Metadata),
 		Store:       req.Retain,
 		CompletedAt: unixNow(),
 	}
 	if len(state.Metadata) == 0 {
-		state.Metadata = CloneMetadata(req.Controls.Metadata)
+		state.Metadata = chat.CloneMetadata(req.Metadata)
 	}
 	switch {
 	case runErr != nil:
-		state.Status = StatusFailed
-		if result.Outcome.Status == StatusCancelled {
-			state.Status = StatusCancelled
+		state.Status = chat.StatusFailed
+		if result.Outcome.Status == chat.StatusCancelled {
+			state.Status = chat.StatusCancelled
 		}
 		state.Error = publicAPIError(runErr)
 	case result.Outcome.Status != "":
 		state.Status = result.Outcome.Status
 	default:
-		state.Status = StatusCompleted
+		state.Status = chat.StatusCompleted
 	}
-	if state.Status == StatusIncomplete {
+	if state.Status == chat.StatusIncomplete {
 		state.Incomplete = incompleteReason(result.Outcome.StopReason)
 	}
-	if state.Status == StatusInProgress {
+	if state.Status == chat.StatusInProgress {
 		state.CompletedAt = 0
 	}
 	return state
 }
 
-func publicAPIError(err error) *APIError {
+func publicAPIError(err error) *chat.APIError {
 	api := asAPIError(err)
 	if api == nil {
 		return nil
@@ -400,9 +405,9 @@ func publicAPIError(err error) *APIError {
 	return &copy
 }
 
-func incompleteReason(reason StopReason) string {
+func incompleteReason(reason chat.StopReason) string {
 	switch reason {
-	case StopLength:
+	case chat.StopLength:
 		return "max_output_tokens"
 	case "":
 		return "incomplete"
@@ -411,39 +416,28 @@ func incompleteReason(reason StopReason) string {
 	}
 }
 
-func outcomeFromState(state ResponseState) Outcome {
-	outcome := Outcome{Status: state.Status, Usage: state.Usage}
+func outcomeFromState(state chat.ResponseState) chat.Outcome {
+	outcome := chat.Outcome{Status: state.Status, Usage: state.Usage}
 	switch state.Status {
-	case StatusFailed:
-		outcome.StopReason = StopError
-	case StatusCancelled:
-		outcome.StopReason = StopCancelled
-	case StatusIncomplete:
+	case chat.StatusFailed:
+		outcome.StopReason = chat.StopError
+	case chat.StatusCancelled:
+		outcome.StopReason = chat.StopCancelled
+	case chat.StatusIncomplete:
 		if state.Incomplete == "max_output_tokens" {
-			outcome.StopReason = StopLength
+			outcome.StopReason = chat.StopLength
 		}
 	}
 	return outcome
 }
 
-func responsePrefix(p protocol) string {
-	switch p {
-	case protocolResponses:
-		return "resp_"
-	case protocolAnthropic:
-		return "msg_"
-	default:
-		return "chatcmpl_"
-	}
-}
-
 func unixNow() int64 { return time.Now().Unix() }
 
-func cloneItems(items []Item) []Item {
+func cloneItems(items []chat.Item) []chat.Item {
 	if len(items) == 0 {
 		return nil
 	}
-	out := make([]Item, len(items))
+	out := make([]chat.Item, len(items))
 	for n, item := range items {
 		out[n] = item.Clone()
 	}

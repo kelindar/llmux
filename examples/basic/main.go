@@ -6,18 +6,22 @@ import (
 	"net/http"
 
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/chat"
 )
 
 func main() {
-	agent := llmux.AgentFunc(func(_ context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
-		return llmux.Outcome{}, llmux.EmitText(emit, "received "+req.Input[0].Content[0].Text)
+	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("received " + req.Input[0].Content[0].Text))
 	})
-	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
-		return agent, llmux.Capabilities{}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		return agent, chat.Capabilities{}, nil
 	})
 
-	log.Println("listening on http://127.0.0.1:8080")
-	if err := http.ListenAndServe("127.0.0.1:8080", llmux.New(resolver)); err != nil {
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", http.StripPrefix("/v1", llmux.New(resolver)))
+
+	log.Println("listening on http://127.0.0.1:8080 (POST /v1/chat/completions)")
+	if err := http.ListenAndServe("127.0.0.1:8080", mux); err != nil {
 		log.Fatal(err)
 	}
 }

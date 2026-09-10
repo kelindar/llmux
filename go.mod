@@ -6,6 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.71.0
 	github.com/kelindar/bench v0.3.3
 	github.com/openai/openai-go/v3 v3.59.0
+	github.com/rs/xid v1.6.0
 	github.com/stretchr/testify v1.11.1
 )
 

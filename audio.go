@@ -12,16 +12,17 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/kelindar/llmux/chat"
 	internalwire "github.com/kelindar/llmux/internal/wire"
 )
 
 func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case h.transcriber == nil:
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "audio transcription is not configured"})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "audio transcription is not configured"})
 		return
 	case !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data;"):
-		writeProtocolError(w, protocolChat, Invalid("content_type", "audio transcription requires multipart/form-data"))
+		writeProtocolError(w, protocolChat, chat.Invalid("content_type", "audio transcription requires multipart/form-data"))
 		return
 	}
 
@@ -35,7 +36,7 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 			code = "request_too_large"
 			message = "multipart request exceeds the configured limit"
 		}
-		writeProtocolError(w, protocolChat, &APIError{Status: status, Type: "invalid_request_error", Code: code, Message: message, Err: err})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: status, Type: "invalid_request_error", Code: code, Message: message, Err: err})
 		return
 	}
 	if r.MultipartForm != nil {
@@ -48,22 +49,22 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
-		writeProtocolError(w, protocolChat, Invalid("model", "model is required"))
+		writeProtocolError(w, protocolChat, chat.Invalid("model", "model is required"))
 		return
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeProtocolError(w, protocolChat, Invalid("file", "file is required"))
+		writeProtocolError(w, protocolChat, chat.Invalid("file", "file is required"))
 		return
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, h.limits.MaxMediaBytes+1))
 	if err != nil {
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "file_read_failed", Param: "file", Message: "could not read audio file", Err: err})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "file_read_failed", Param: "file", Message: "could not read audio file", Err: err})
 		return
 	}
 	if int64(len(data)) > h.limits.MaxMediaBytes {
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "media_too_large", Param: "file", Message: "audio file exceeds the configured media limit"})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "media_too_large", Param: "file", Message: "audio file exceeds the configured media limit"})
 		return
 	}
 
@@ -74,7 +75,7 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 	switch responseFormat {
 	case "json", "text", "verbose_json":
 	default:
-		writeProtocolError(w, protocolChat, Unsupported("response_format", "only json, text, and verbose_json are supported"))
+		writeProtocolError(w, protocolChat, chat.Unsupported("response_format", "only json, text, and verbose_json are supported"))
 		return
 	}
 	temperature, err := parseFormFloat(r, "temperature")
@@ -83,7 +84,7 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if temperature != nil && (*temperature < 0 || *temperature > 1) {
-		writeProtocolError(w, protocolChat, Invalid("temperature", "temperature must be between 0 and 1"))
+		writeProtocolError(w, protocolChat, chat.Invalid("temperature", "temperature must be between 0 and 1"))
 		return
 	}
 	request := TranscriptionRequest{
@@ -123,7 +124,7 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 
 func rejectMultipartFields(form *multipart.Form) error {
 	if form == nil {
-		return Invalid("body", "multipart form is required")
+		return chat.Invalid("body", "multipart form is required")
 	}
 	allowed := map[string]bool{
 		"model": true, "file": true, "prompt": true, "language": true,
@@ -132,20 +133,20 @@ func rejectMultipartFields(form *multipart.Form) error {
 	for key, values := range form.Value {
 		switch {
 		case !allowed[key]:
-			return Unsupported(key, key+" is not supported")
+			return chat.Unsupported(key, key+" is not supported")
 		case len(values) != 1:
-			return Invalid(key, key+" must be provided once")
+			return chat.Invalid(key, key+" must be provided once")
 		}
 	}
 	for key := range form.File {
 		switch key {
 		case "file":
 		default:
-			return Unsupported(key, key+" is not supported")
+			return chat.Unsupported(key, key+" is not supported")
 		}
 	}
 	if len(form.File["file"]) != 1 {
-		return Invalid("file", "file must be provided once")
+		return chat.Invalid("file", "file must be provided once")
 	}
 	return nil
 }
@@ -164,7 +165,7 @@ func parseFormFloat(r *http.Request, key string) (*float64, error) {
 
 func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	if h.speaker == nil {
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "speech generation is not configured"})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "speech generation is not configured"})
 		return
 	}
 	body, err := h.readBody(w, r, h.limits.MaxRequestBytes)
@@ -190,10 +191,10 @@ func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(result.Data) == 0:
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusInternalServerError, Type: "server_error", Code: "empty_audio", Message: "speech service returned no audio"})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusInternalServerError, Type: "server_error", Code: "empty_audio", Message: "speech service returned no audio"})
 		return
 	case int64(len(result.Data)) > h.limits.MaxOutputBytes:
-		writeProtocolError(w, protocolChat, &APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "output_too_large", Message: "speech output exceeds the configured limit"})
+		writeProtocolError(w, protocolChat, &chat.APIError{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "output_too_large", Message: "speech output exceeds the configured limit"})
 		return
 	}
 	if request.StreamFormat == "sse" {
@@ -241,14 +242,14 @@ func parseSpeechRequest(object map[string]jsontext.Value) (SpeechRequest, error)
 		return SpeechRequest{}, err
 	}
 	if utf8.RuneCountInString(input) > 4096 {
-		return SpeechRequest{}, Invalid("input", "input exceeds the 4096 character limit")
+		return SpeechRequest{}, chat.Invalid("input", "input exceeds the 4096 character limit")
 	}
 	voice, err := parseSpeechVoice(object["voice"])
 	if err != nil {
 		return SpeechRequest{}, err
 	}
 	if voice == "" {
-		return SpeechRequest{}, Invalid("voice", "voice is required")
+		return SpeechRequest{}, chat.Invalid("voice", "voice is required")
 	}
 	request := SpeechRequest{Model: model, Input: input, Voice: voice, Speed: 1, ResponseFormat: "mp3", StreamFormat: "audio"}
 	if value, ok, err := decodeString(object, "instructions"); err != nil {
@@ -262,13 +263,13 @@ func parseSpeechRequest(object map[string]jsontext.Value) (SpeechRequest, error)
 		request.ResponseFormat = strings.ToLower(value)
 	}
 	if !validSpeechFormat(request.ResponseFormat) {
-		return SpeechRequest{}, Unsupported("response_format", "supported formats are mp3, opus, aac, flac, wav, and pcm")
+		return SpeechRequest{}, chat.Unsupported("response_format", "supported formats are mp3, opus, aac, flac, wav, and pcm")
 	}
 	if value, err := decodeFloat(object, "speed"); err != nil {
 		return SpeechRequest{}, err
 	} else if value != nil {
 		if *value < 0.25 || *value > 4 {
-			return SpeechRequest{}, Invalid("speed", "speed must be between 0.25 and 4")
+			return SpeechRequest{}, chat.Invalid("speed", "speed must be between 0.25 and 4")
 		}
 		request.Speed = *value
 	}
@@ -280,14 +281,14 @@ func parseSpeechRequest(object map[string]jsontext.Value) (SpeechRequest, error)
 	switch request.StreamFormat {
 	case "audio", "sse":
 	default:
-		return SpeechRequest{}, Unsupported("stream_format", "supported stream formats are audio and sse")
+		return SpeechRequest{}, chat.Unsupported("stream_format", "supported stream formats are audio and sse")
 	}
 	return request, nil
 }
 
 func parseSpeechVoice(raw jsontext.Value) (string, error) {
 	if len(raw) == 0 {
-		return "", Invalid("voice", "voice is required")
+		return "", chat.Invalid("voice", "voice is required")
 	}
 	var voice string
 	if err := json.Unmarshal(raw, &voice); err == nil {
@@ -295,7 +296,7 @@ func parseSpeechVoice(raw jsontext.Value) (string, error) {
 	}
 	object, err := internalwire.RawObject(raw, "voice")
 	if err != nil {
-		return "", Invalid("voice", "voice must be a string or an object with an id")
+		return "", chat.Invalid("voice", "voice must be a string or an object with an id")
 	}
 	if err := internalwire.RejectUnknownStrict(object, map[string]bool{"id": true}); err != nil {
 		return "", err

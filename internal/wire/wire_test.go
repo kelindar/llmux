@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kelindar/llmux/contract"
+	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,7 +57,7 @@ func TestDecodeString(t *testing.T) {
 
 	_, _, err = DecodeString(object, "age")
 	require.Error(t, err)
-	var apiErr *contract.APIError
+	var apiErr *chat.APIError
 	require.True(t, errors.As(err, &apiErr))
 	assert.Equal(t, "age", apiErr.Param)
 }
@@ -303,7 +303,7 @@ func TestParseChatContent(t *testing.T) {
 	parts, err = ParseChatContent(jsontext.Value(`"hello"`))
 	require.NoError(t, err)
 	require.Len(t, parts, 1)
-	assert.Equal(t, contract.PartText, parts[0].Type)
+	assert.Equal(t, chat.PartText, parts[0].Type)
 	assert.Equal(t, "hello", parts[0].Text)
 
 	imageB64 := base64.StdEncoding.EncodeToString([]byte{1})
@@ -311,7 +311,7 @@ func TestParseChatContent(t *testing.T) {
 	parts, err = ParseChatContent(jsontext.Value(content))
 	require.NoError(t, err)
 	require.Len(t, parts, 2)
-	assert.Equal(t, contract.PartImage, parts[1].Type)
+	assert.Equal(t, chat.PartImage, parts[1].Type)
 	assert.Equal(t, "low", parts[1].Detail)
 
 	audioB64 := base64.StdEncoding.EncodeToString([]byte{2})
@@ -319,7 +319,7 @@ func TestParseChatContent(t *testing.T) {
 	parts, err = ParseChatContent(jsontext.Value(audioContent))
 	require.NoError(t, err)
 	require.Len(t, parts, 1)
-	assert.Equal(t, contract.PartAudio, parts[0].Type)
+	assert.Equal(t, chat.PartAudio, parts[0].Type)
 	assert.Equal(t, "wav", parts[0].Media.Format)
 
 	fileData := base64.StdEncoding.EncodeToString([]byte("f"))
@@ -327,7 +327,7 @@ func TestParseChatContent(t *testing.T) {
 	parts, err = ParseChatContent(jsontext.Value(fileContent))
 	require.NoError(t, err)
 	require.Len(t, parts, 1)
-	assert.Equal(t, contract.PartFile, parts[0].Type)
+	assert.Equal(t, chat.PartFile, parts[0].Type)
 
 	_, err = ParseChatContent(jsontext.Value(`[{"type":"unknown"}]`))
 	require.Error(t, err)
@@ -371,16 +371,16 @@ func TestAudioMIME(t *testing.T) {
 }
 
 func TestCollectText(t *testing.T) {
-	parts := []contract.Part{
-		contract.TextPart("hello "),
-		contract.ImagePart(contract.InlineMedia("image/png", []byte{1})),
-		{Type: contract.PartReasoningSummary, Text: "think"},
+	parts := []chat.Part{
+		chat.TextPart("hello "),
+		chat.ImagePart(chat.InlineMedia("image/png", []byte{1})),
+		{Type: chat.PartReasoningSummary, Text: "think"},
 	}
 	assert.Equal(t, "hello think", CollectText(parts))
 }
 
 func TestTextParts(t *testing.T) {
-	parts := []contract.Part{contract.TextPart("in"), contract.ImagePart(contract.InlineMedia("image/png", []byte{1})), contract.TextPart("out")}
+	parts := []chat.Part{chat.TextPart("in"), chat.ImagePart(chat.InlineMedia("image/png", []byte{1})), chat.TextPart("out")}
 
 	input := InputTextParts(parts)
 	require.Len(t, input, 2)
@@ -394,46 +394,46 @@ func TestTextParts(t *testing.T) {
 }
 
 func TestMediaDataURL(t *testing.T) {
-	media := contract.InlineMedia("text/plain", []byte("abc"))
+	media := chat.InlineMedia("text/plain", []byte("abc"))
 	url, err := MediaDataURL(media)
 	require.NoError(t, err)
 	assert.Contains(t, url, "data:text/plain;base64,")
 
-	_, err = MediaDataURL(contract.Media{URL: "https://example.com/x"})
+	_, err = MediaDataURL(chat.Media{URL: "https://example.com/x"})
 	require.Error(t, err)
 
-	_, err = MediaDataURL(contract.InlineMedia("", []byte{1}))
+	_, err = MediaDataURL(chat.InlineMedia("", []byte{1}))
 	require.Error(t, err)
 }
 
 func TestWireAliases(t *testing.T) {
-	part := contract.TextPart("x")
-	assert.Equal(t, contract.TextPart("x"), part)
+	part := chat.TextPart("x")
+	assert.Equal(t, chat.TextPart("x"), part)
 
-	media := contract.InlineMedia("image/png", []byte{1})
-	assert.Equal(t, contract.InlineMedia("image/png", []byte{1}), media)
+	media := chat.InlineMedia("image/png", []byte{1})
+	assert.Equal(t, chat.InlineMedia("image/png", []byte{1}), media)
 
-	err := contract.Invalid("p", "m")
+	err := chat.Invalid("p", "m")
 	require.NotNil(t, err)
-	assert.Equal(t, contract.Invalid("p", "m").Code, err.Code)
+	assert.Equal(t, chat.Invalid("p", "m").Code, err.Code)
 
-	err = contract.Unsupported("p", "m")
+	err = chat.Unsupported("p", "m")
 	require.NotNil(t, err)
-	assert.Equal(t, contract.Unsupported("p", "m").Code, err.Code)
+	assert.Equal(t, chat.Unsupported("p", "m").Code, err.Code)
 }
 
 func TestStringOrContent(t *testing.T) {
-	parts, err := ParseStringOrContent(jsontext.Value(`"plain"`), "param", func(jsontext.Value) ([]contract.Part, error) {
+	parts, err := ParseStringOrContent(jsontext.Value(`"plain"`), "param", func(jsontext.Value) ([]chat.Part, error) {
 		t.Fatal("parser should not run")
 		return nil, nil
 	})
 	require.NoError(t, err)
 	require.Len(t, parts, 1)
 
-	_, err = ParseStringOrContent(jsontext.Value(`[1]`), "param", func(raw jsontext.Value) ([]contract.Part, error) {
+	_, err = ParseStringOrContent(jsontext.Value(`[1]`), "param", func(raw jsontext.Value) ([]chat.Part, error) {
 		var values []jsontext.Value
 		require.NoError(t, json.Unmarshal(raw, &values))
-		return []contract.Part{contract.TextPart("from-array")}, nil
+		return []chat.Part{chat.TextPart("from-array")}, nil
 	})
 	require.NoError(t, err)
 }
