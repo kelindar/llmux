@@ -40,8 +40,9 @@ var (
 	ErrConcurrentEmit = errors.New("llmux: concurrent Emit calls are not supported")
 	// ErrEmitClosed is returned when Emit is called after the stream is closed.
 	ErrEmitClosed = errors.New("llmux: emission is closed")
-	// ErrDelivery is returned when a client write fails. With durable
-	// acceptance, the handler stops delivery but does not cancel execution.
+	// ErrDelivery is returned when a client write fails. With a positive
+	// Acceptance.RunTimeout, the handler stops delivery but does not cancel
+	// execution.
 	ErrDelivery = errors.New("llmux: client delivery failed")
 )
 

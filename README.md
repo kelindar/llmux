@@ -133,23 +133,20 @@ no equivalent mapping in this compatibility profile.
 
 Applications with their own durable execution and response storage can take
 control of response identity, acceptance, and terminal persistence through
-`Lifecycle`. Accept returns per-request state on `Acceptance`; set
-`Acceptance.Finish` to close that request. `Agent` remains the sole
-execution owner.
+`Lifecycle`. Pass a function (often a method value) to `WithLifecycle`:
 
 ```go
-type Lifecycle interface {
-	Accept(context.Context, *TurnRequest) (Acceptance, error)
-}
+llmux.WithLifecycle(store.Accept)
+
+type Lifecycle func(context.Context, *TurnRequest) (Acceptance, error)
 
 type Acceptance struct {
-	ID       string
-	Created  int64
-	Replay   *ResponseState
-	Durable  bool
-	Context  context.Context
-	Activity bool
-	Finish   func(context.Context, *TurnResult) error
+	ID         string
+	Created    int64
+	Replay     *State
+	RunTimeout time.Duration // 0=request ctx; >0=detach+bound; <0=rejected
+	Activity   bool
+	Finish     func(context.Context, *TurnResult) error
 }
 ```
 
@@ -157,12 +154,14 @@ Ordering when a Lifecycle is configured:
 
 1. Validate the request, resolve effective store policy, load continuation.
 2. `Accept` — reserve identity, reject conflicts, or return an idempotent
-   `*ResponseState` replay. Capture request-local resources (idempotency
-   key, durable cancel) on `Acceptance.Finish` instead of reconnecting
-   through global maps.
-3. `Agent.Run` (skipped on replay). `Acceptance.Durable` detaches client
-   disconnect from cancellation; supply a bounded `Acceptance.Context` for
-   production. Durable is not a job system.
+   `*State` replay. Capture request-local resources (idempotency
+   key) on `Acceptance.Finish` instead of reconnecting through global maps.
+3. `Agent.Run` (skipped on replay). `RunTimeout` of zero follows the HTTP
+   request context. A positive duration detaches client cancellation,
+   preserves context values, and bounds execution; llmux owns cancel and
+   releases it on every exit. Delivery failures after disconnect do not
+   cancel detached execution. A negative duration is rejected and Finish
+   still runs so reserved resources cannot leak.
 4. `Finish` — exactly once for every accepted execution, with the
    execution context. That context may already be cancelled. Finish owns
    any detached, bounded cleanup work, for example
@@ -173,7 +172,7 @@ Ordering when a Lifecycle is configured:
    retaining or modifying it.
 5. Advertise successful completion only after Finish succeeds.
 
-`ResponseState` is the shared client-visible payload for creation,
+`State` is the shared client-visible payload for creation,
 finalization, replay, and `ResponsesBody` retrieval: status, output, usage,
 sanitized public error, incomplete reason, completion timestamp, metadata,
 and effective store. Identity (`id`, `created_at`) stays separate and
@@ -187,10 +186,11 @@ Explicit `store:true` / `store:false` always win. Applications that cannot
 honor `store:false` should reject in Accept.
 
 `Request.Turn` is this request's input. `Request.Input` is the effective
-conversation for the agent. Persist `Turn` plus `ResponseState.Output` with a
-parent reference — do not rewrite full history each turn.
+conversation for the agent. Persist `Turn` plus `State.Output` with a
+parent reference — do not rewrite full history each turn or retain the
+accumulated `Input` slice.
 
-Metadata from the accepted request is cloned into `ResponseState` and reused
+Metadata from the accepted request is cloned into `State` and reused
 for replay/retrieval; a retry's metadata does not replace the original.
 
 Mount under an application prefix with `http.StripPrefix` (for example
@@ -207,11 +207,11 @@ never assistant output or continuation history, and is not translated to Chat
 or Anthropic. Keep application-specific response fields outside the standard
 envelope rather than mutating protocol objects.
 
-See [`examples/lifecycle`](examples/lifecycle) for an in-memory Accept /
-continuation / idempotency / retrieval sketch. The ordinary path is the
-default; durable execution is an explicit opt-in with a bounded run context
-owned by Accept and released in Finish. Cleanup after cancellation starts
-inside Finish via `context.WithTimeout(context.WithoutCancel(ctx), …)`.
+See [`examples/lifecycle`](examples/lifecycle) for a minimal Accept / Finish
+sketch, and [`examples/lifecycle-full`](examples/lifecycle-full) for
+idempotency, continuation, retrieval, and `RunTimeout` durable execution.
+Cleanup after cancellation starts inside Finish via
+`context.WithTimeout(context.WithoutCancel(ctx), …)`.
 
 ## Media and audio
 
@@ -266,6 +266,7 @@ terminal lifecycle event rather than appending a JSON body.
 go run ./examples/basic
 go run ./examples/multimodal
 go run ./examples/lifecycle
+go run ./examples/lifecycle-full
 go run ./bench
 ```
 

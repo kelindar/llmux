@@ -722,7 +722,7 @@ func TestResponseObject(t *testing.T) {
 			ToolChoice:       &chat.ToolChoice{Mode: "function", Name: "search"},
 		},
 	}
-	value := responseObject(req, responseMeta{Model: "gpt-4.1"}, chat.ResponseState{Status: chat.StatusIncomplete}, []any{})
+	value := responseObject(req, responseMeta{Model: "gpt-4.1"}, chat.State{Status: chat.StatusIncomplete}, []any{})
 	assert.Equal(t, false, value["parallel_tool_calls"])
 	assert.Equal(t, "prev", value["previous_response_id"])
 }

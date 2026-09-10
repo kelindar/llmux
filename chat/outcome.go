@@ -55,7 +55,7 @@ func (o Outcome) Validate() error {
 	return nil
 }
 
-// ResponseState is the client-visible response payload shared by creation,
+// State is the client-visible response payload shared by creation,
 // finalization, replay, and retrieval. Identity (ID) and creation time remain
 // separate and application-controlled.
 //
@@ -65,7 +65,7 @@ func (o Outcome) Validate() error {
 //
 // Error is sanitized public error only. Operational Go errors stay on
 // TurnResult.Err and are never copied into Error.Message automatically.
-type ResponseState struct {
+type State struct {
 	Status      Status            // completed, failed, incomplete, cancelled, or in_progress
 	Output      []Item            // Output items for this response turn
 	Usage       *Usage            // Token usage when known
@@ -77,7 +77,7 @@ type ResponseState struct {
 }
 
 // Clone returns a deep copy safe for independent retention.
-func (s ResponseState) Clone() ResponseState {
+func (s State) Clone() State {
 	out := s
 	if s.Output != nil {
 		out.Output = make([]Item, len(s.Output))

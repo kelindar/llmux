@@ -167,7 +167,7 @@ func TestContinuation(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text(strconv.Itoa(len(req.Input))))
 	})
-	handler := testHandler(agent, chat.Capabilities{Continuation: true}, WithContinuationStore(store), WithLifecycle(life))
+	handler := testHandler(agent, chat.Capabilities{Continuation: true}, WithContinuationStore(store), WithLifecycle(life.Accept))
 
 	first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"first"}`, nil)
 	require.Equal(t, http.StatusOK, first.Code)
@@ -456,7 +456,7 @@ func TestFinalizeError(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	}), chat.Capabilities{Continuation: true},
-		WithLifecycle(life),
+		WithLifecycle(life.Accept),
 		WithErrorLog(func(_ context.Context, err error) { logged = err }),
 	)
 	recorder := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"first"}`, nil)

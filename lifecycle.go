@@ -9,7 +9,7 @@ import (
 
 // ResponsesBody builds the same Responses JSON envelope used for creation,
 // idempotent replay, and application-owned GET retrieval.
-func ResponsesBody(req chat.Request, state chat.ResponseState, id string, created int64) (any, error) {
+func ResponsesBody(req chat.Request, state chat.State, id string, created int64) (any, error) {
 	return responses.Render(req, state, id, created)
 }
 

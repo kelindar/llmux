@@ -180,7 +180,7 @@ type Request struct {
 	Output       OutputSpec        // Declared output modalities and format.
 	Previous     *string           // Prior response ID for continuation.
 	Store        *bool             // Wire store flag; nil when omitted.
-	Metadata     map[string]string // Request metadata; cloned into ResponseState at acceptance.
+	Metadata     map[string]string // Request metadata; cloned into State at acceptance.
 	Retain       bool              // Effective content retention; set by the handler.
 }
 
@@ -235,13 +235,13 @@ type Capabilities struct {
 	InputModalities    Modality
 	OutputModalities   Modality
 	GenerationControls GenerationControl
+	Extensions         map[string]bool
 	Tools              bool
 	ClientTools        bool
 	StructuredOutput   bool
 	ReasoningSummary   bool
 	ImageGeneration    bool
 	Continuation       bool
-	Extensions         map[string]bool
 }
 
 // GenerationControl identifies a generation control understood by an agent.

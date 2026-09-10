@@ -126,7 +126,7 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		Created:  acceptance.Created,
 		Model:    parsed.Request.Target,
 		Activity: acceptance.Activity,
-		State: chat.ResponseState{
+		State: chat.State{
 			Metadata: chat.CloneMetadata(parsed.Request.Metadata),
 			Store:    parsed.Request.Retain,
 		},
@@ -170,13 +170,32 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		// No lifecycle configured: fall through with library defaults.
 	}
 
-	runCtx := r.Context()
-	if acceptance.Durable {
-		if acceptance.Context != nil {
-			runCtx = acceptance.Context
-		} else {
-			runCtx = context.WithoutCancel(r.Context())
+	if acceptance.RunTimeout < 0 {
+		invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
+		if acceptance.Finish != nil {
+			_ = acceptance.Finish(r.Context(), &chat.TurnResult{
+				ID:      meta.ID,
+				Created: meta.Created,
+				Request: &parsed.Request,
+				State: chat.State{
+					Status:   chat.StatusFailed,
+					Error:    publicAPIError(invalid),
+					Metadata: chat.CloneMetadata(meta.State.Metadata),
+					Store:    parsed.Request.Retain,
+				},
+				Err:    invalid,
+				Stream: parsed.Stream,
+			})
 		}
+		writeProtocolError(w, parsed.Kind, invalid)
+		return
+	}
+
+	runCtx := r.Context()
+	if acceptance.RunTimeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), acceptance.RunTimeout)
+		defer cancel()
 	}
 
 	if parsed.Stream {
@@ -190,7 +209,7 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Accep
 	if h.lifecycle == nil {
 		return chat.Acceptance{}, false, nil
 	}
-	accepted, err := h.lifecycle.Accept(r.Context(), &chat.TurnRequest{
+	accepted, err := h.lifecycle(r.Context(), &chat.TurnRequest{
 		Request:        &parsed.Request,
 		Stream:         parsed.Stream,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
@@ -201,7 +220,7 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Accep
 	return accepted, true, nil
 }
 
-func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state chat.ResponseState) {
+func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapter protocolAdapter, meta responseMeta, state chat.State) {
 	meta.State = state
 	// state.Output is already independent (Acceptance.Replay was Clone'd).
 	result := execution.Result{
@@ -260,7 +279,7 @@ func (h *Handler) serveStream(
 			return nil
 		}
 		if err := stream.Event(event); err != nil {
-			if acceptance.Durable && errors.Is(err, chat.ErrDelivery) {
+			if acceptance.RunTimeout > 0 && errors.Is(err, chat.ErrDelivery) {
 				delivering = false
 				return nil
 			}
@@ -269,7 +288,7 @@ func (h *Handler) serveStream(
 		return nil
 	})
 
-	state := buildResponseState(&parsed.Request, meta, result, runErr)
+	state := buildState(&parsed.Request, meta, result, runErr)
 	meta.State = state
 	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
 	if runErr != nil {
@@ -317,7 +336,7 @@ func (h *Handler) serveOrdinary(
 	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event chat.Event) error {
 		return validateEvent(event)
 	})
-	state := buildResponseState(&parsed.Request, meta, result, runErr)
+	state := buildState(&parsed.Request, meta, result, runErr)
 	meta.State = state
 	finalErr := h.finishTurn(runCtx, acceptance, parsed, meta, state, runErr)
 	if runErr != nil {
@@ -344,7 +363,7 @@ func (h *Handler) finishTurn(
 	acceptance chat.Acceptance,
 	parsed parsedRequest,
 	meta responseMeta,
-	state chat.ResponseState,
+	state chat.State,
 	runErr error,
 ) error {
 	if acceptance.Finish == nil {
@@ -360,8 +379,8 @@ func (h *Handler) finishTurn(
 	})
 }
 
-func buildResponseState(req *chat.Request, meta responseMeta, result execution.Result, runErr error) chat.ResponseState {
-	state := chat.ResponseState{
+func buildState(req *chat.Request, meta responseMeta, result execution.Result, runErr error) chat.State {
+	state := chat.State{
 		// Take ownership of execution output; Result is not retained after this.
 		Output:      result.Items,
 		Usage:       result.Outcome.Usage,
@@ -414,7 +433,7 @@ func incompleteReason(reason chat.StopReason) string {
 	}
 }
 
-func outcomeFromState(state chat.ResponseState) chat.Outcome {
+func outcomeFromState(state chat.State) chat.Outcome {
 	outcome := chat.Outcome{Status: state.Status, Usage: state.Usage}
 	switch state.Status {
 	case chat.StatusFailed:

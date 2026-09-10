@@ -34,7 +34,7 @@ func (Adapter) Response(req chat.Request, result execution.Result, meta response
 
 // Render builds the same Responses envelope used for creation, replay, and
 // application-owned GET retrieval.
-func Render(req chat.Request, state chat.ResponseState, id string, created int64) (any, error) {
+func Render(req chat.Request, state chat.State, id string, created int64) (any, error) {
 	output := make([]any, 0, len(state.Output))
 	for _, item := range state.Output {
 		value, err := responseItem(item)
@@ -51,7 +51,7 @@ func Render(req chat.Request, state chat.ResponseState, id string, created int64
 	}, state, output), nil
 }
 
-func responseStatus(state chat.ResponseState, outcome chat.Outcome) string {
+func responseStatus(state chat.State, outcome chat.Outcome) string {
 	switch {
 	case state.Status != "":
 		return string(state.Status)
@@ -62,7 +62,7 @@ func responseStatus(state chat.ResponseState, outcome chat.Outcome) string {
 	}
 }
 
-func responseObject(req chat.Request, meta responseMeta, state chat.ResponseState, output []any) map[string]any {
+func responseObject(req chat.Request, meta responseMeta, state chat.State, output []any) map[string]any {
 	status := responseStatus(state, chat.Outcome{})
 	value := map[string]any{
 		"id":                   meta.ID,
