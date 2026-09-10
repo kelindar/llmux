@@ -653,7 +653,14 @@ func TestModelsList(t *testing.T) {
 	assert.Equal(t, "list", body["object"])
 	data := body["data"].([]any)
 	require.Len(t, data, 2)
-	assert.Equal(t, "model", data[1].(map[string]any)["object"])
+	for i, entry := range data {
+		obj, ok := entry.(map[string]any)
+		require.True(t, ok, "entry %d", i)
+		assert.Equal(t, "model", obj["object"], "entry %d", i)
+	}
+	assert.Equal(t, "agent/basic", data[0].(map[string]any)["id"])
+	assert.Equal(t, "test", data[0].(map[string]any)["owned_by"])
+	assert.Equal(t, "agent/other", data[1].(map[string]any)["id"])
 }
 
 func TestMethodNotAllowed(t *testing.T) {

@@ -397,7 +397,7 @@ func TestLifecycle(t *testing.T) {
 			Target:      "agent/basic",
 			Status:      chat.StatusFailed,
 			Output:      []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))},
-			Error:       chat.NewError(400, "invalid_request_error", "test_code", "", "public msg"),
+			Error:       &chat.Error{Status: 400, Type: "invalid_request_error", Code: "test_code", Message: "public msg"},
 			Incomplete:  "max_output_tokens",
 			CompletedAt: 99,
 			Metadata:    map[string]string{"k": "v"},
@@ -425,7 +425,7 @@ func TestLifecycle(t *testing.T) {
 			Created:     10,
 			Target:      "agent/basic",
 			Status:      chat.StatusFailed,
-			Error:       chat.NewError(503, "server_error", "upstream", "", "service unavailable"),
+			Error:       &chat.Error{Status: 503, Type: "server_error", Code: "upstream", Message: "service unavailable"},
 			CompletedAt: 123,
 			Store:       true,
 		}
@@ -442,7 +442,7 @@ func TestLifecycle(t *testing.T) {
 		var calls atomic.Int32
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
-			return chat.Outcome{}, chat.NewError(503, "server_error", "upstream", "", "service unavailable")
+			return chat.Outcome{}, &chat.Error{Status: 503, Type: "server_error", Code: "upstream", Message: "service unavailable"}
 		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "fail-ord"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
@@ -461,7 +461,7 @@ func TestLifecycle(t *testing.T) {
 		var calls atomic.Int32
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
-			return chat.Outcome{}, chat.NewError(503, "server_error", "upstream", "", "service unavailable")
+			return chat.Outcome{}, &chat.Error{Status: 503, Type: "server_error", Code: "upstream", Message: "service unavailable"}
 		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "fail-stream"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, headers)

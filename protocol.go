@@ -3,6 +3,7 @@ package llmux
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"time"
 
@@ -193,9 +194,9 @@ func initialResponse(seed chat.Response, parsed *parsedRequest) chat.Response {
 		resp.Created = unixNow()
 	}
 	if len(resp.Metadata) == 0 {
-		resp.Metadata = chat.CloneMetadata(parsed.Metadata)
+		resp.Metadata = cloneMetadata(parsed.Metadata)
 	} else {
-		resp.Metadata = chat.CloneMetadata(resp.Metadata)
+		resp.Metadata = cloneMetadata(resp.Metadata)
 	}
 	resp.Store = parsed.Retain
 	resp.Target = parsed.Request.Target
@@ -440,6 +441,13 @@ func outcomeFromResponse(resp chat.Response) chat.Outcome {
 }
 
 func unixNow() int64 { return time.Now().Unix() }
+
+func cloneMetadata(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	return maps.Clone(src)
+}
 
 func cloneItems(items []chat.Item) []chat.Item {
 	if len(items) == 0 {

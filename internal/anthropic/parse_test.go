@@ -780,7 +780,7 @@ func TestAdapterStreamFail(t *testing.T) {
 		rec := httptest.NewRecorder()
 		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("x")))
-		require.NoError(t, stream.Fail(chat.NewError(403, "permission_error", "forbidden", "", "denied")))
+		require.NoError(t, stream.Fail(&chat.Error{Status: 403, Type: "permission_error", Code: "forbidden", Message: "denied"}))
 		assert.Contains(t, rec.Body.String(), "permission_error")
 	})
 }

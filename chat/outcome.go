@@ -38,7 +38,7 @@ type Outcome struct {
 // Validate checks an agent outcome.
 func (o Outcome) Validate() error {
 	switch {
-	case o.Status != "" && !ValidStatus(o.Status):
+	case o.Status != "" && !validStatus(o.Status):
 		return fmt.Errorf("invalid outcome status %q", o.Status)
 	case o.Status == StatusInProgress:
 		return errors.New("outcome status cannot be in_progress")
@@ -100,7 +100,7 @@ func (r Response) Clone() Response {
 		e.Err = nil
 		out.Error = &e
 	}
-	out.Metadata = CloneMetadata(r.Metadata)
+	out.Metadata = cloneMetadata(r.Metadata)
 	if r.Previous != nil {
 		p := *r.Previous
 		out.Previous = &p
@@ -108,8 +108,8 @@ func (r Response) Clone() Response {
 	return out
 }
 
-// CloneMetadata returns a shallow copy of metadata, or nil when empty.
-func CloneMetadata(src map[string]string) map[string]string {
+// cloneMetadata returns a shallow copy of metadata, or nil when empty.
+func cloneMetadata(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
 	}
@@ -143,17 +143,12 @@ func (e *Error) Error() string {
 // Unwrap returns the underlying error.
 func (e *Error) Unwrap() error { return e.Err }
 
-// NewError constructs an APIError with the given response fields.
-func NewError(status int, typ, code, param, message string) *Error {
-	return &Error{Status: status, Type: typ, Code: code, Param: param, Message: message}
-}
-
 // Invalid constructs a 400 invalid_request_error for param.
 func Invalid(param, message string) *Error {
-	return NewError(400, "invalid_request_error", "invalid_request", param, message)
+	return &Error{Status: 400, Type: "invalid_request_error", Code: "invalid_request", Param: param, Message: message}
 }
 
 // Unsupported constructs a 400 unsupported invalid_request_error for param.
 func Unsupported(param, message string) *Error {
-	return NewError(400, "invalid_request_error", "unsupported", param, message)
+	return &Error{Status: 400, Type: "invalid_request_error", Code: "unsupported", Param: param, Message: message}
 }

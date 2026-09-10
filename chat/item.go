@@ -242,7 +242,7 @@ func (i Item) Validate(maxMediaBytes int64, output bool) error {
 	if i.Type == "" {
 		return errors.New("item type is required")
 	}
-	if i.Status != "" && !ValidStatus(i.Status) {
+	if i.Status != "" && !validStatus(i.Status) {
 		return fmt.Errorf("invalid item status %q", i.Status)
 	}
 	switch i.Type {
@@ -334,8 +334,7 @@ func ValidRole(role Role) bool {
 	}
 }
 
-// ValidStatus reports whether status is one of the canonical lifecycle statuses.
-func ValidStatus(status Status) bool {
+func validStatus(status Status) bool {
 	switch status {
 	case StatusInProgress, StatusCompleted, StatusIncomplete, StatusFailed, StatusCancelled:
 		return true

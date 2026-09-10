@@ -149,8 +149,8 @@ func TestAudioControlsValidate(t *testing.T) {
 func TestValidRoleStatus(t *testing.T) {
 	assert.True(t, ValidRole(RoleUser))
 	assert.False(t, ValidRole(Role("guest")))
-	assert.True(t, ValidStatus(StatusCompleted))
-	assert.False(t, ValidStatus(Status("pending")))
+	assert.True(t, validStatus(StatusCompleted))
+	assert.False(t, validStatus(Status("pending")))
 }
 
 func TestGenerationControlHas(t *testing.T) {

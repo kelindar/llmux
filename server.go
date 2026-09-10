@@ -144,14 +144,22 @@ func methodError(method string) *chat.Error {
 }
 
 func (h *Handler) serveModels(w http.ResponseWriter, _ *http.Request) {
-	models := make([]chat.Model, len(h.catalog))
-	copy(models, h.catalog)
-	for i := range models {
-		if models[i].Object == "" {
-			models[i].Object = "model"
+	type catalogEntry struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+	data := make([]catalogEntry, len(h.catalog))
+	for i, model := range h.catalog {
+		data[i] = catalogEntry{
+			ID:      model.ID,
+			Object:  "model",
+			Created: model.Created,
+			OwnedBy: model.OwnedBy,
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
 func (h *Handler) readBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {

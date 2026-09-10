@@ -57,7 +57,7 @@ func TestAPIError(t *testing.T) {
 	var nilErr *Error
 	assert.Equal(t, "", nilErr.Error())
 
-	withMessage := NewError(400, "invalid_request_error", "invalid_request", "field", "bad field")
+	withMessage := &Error{Status: 400, Type: "invalid_request_error", Code: "invalid_request", Param: "field", Message: "bad field"}
 	assert.Equal(t, "bad field", withMessage.Error())
 	assert.Equal(t, 400, withMessage.Status)
 
@@ -74,6 +74,25 @@ func TestAPIError(t *testing.T) {
 
 	unsupported := Unsupported("p", "msg")
 	assert.Equal(t, "unsupported", unsupported.Code)
+}
+
+func TestResponseClone(t *testing.T) {
+	prev := "resp_prev"
+	orig := Response{
+		ID:       "resp_1",
+		Metadata: map[string]string{"k": "v"},
+		Previous: &prev,
+		Output:   []Item{MessageItem(RoleAssistant, TextPart("hi"))},
+	}
+	cloned := orig.Clone()
+	cloned.Metadata["k"] = "changed"
+	assert.Equal(t, "v", orig.Metadata["k"])
+	*cloned.Previous = "other"
+	assert.Equal(t, "resp_prev", *orig.Previous)
+
+	empty := Response{Metadata: map[string]string{}}.Clone()
+	assert.Nil(t, empty.Metadata)
+	assert.Nil(t, Response{}.Clone().Metadata)
 }
 
 func TestLimitsNormalize(t *testing.T) {

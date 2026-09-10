@@ -105,7 +105,7 @@ func (s *SSEWriter) Write(event string, value any) error {
 		return err
 	}
 	if int64(len(data)) > s.limits.MaxEventBytes {
-		return chat.NewError(http.StatusRequestEntityTooLarge, "invalid_request_error", "event_too_large", "", "stream event exceeds the configured limit")
+		return &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "event_too_large", Message: "stream event exceeds the configured limit"}
 	}
 	if err := s.Start(); err != nil {
 		return err
@@ -167,7 +167,7 @@ func WriteError(w http.ResponseWriter, kind Kind, err error) {
 // AsError normalizes err into a chat.APIError with safe defaults.
 func AsError(err error) *chat.Error {
 	if err == nil {
-		return chat.NewError(http.StatusInternalServerError, "server_error", "server_error", "", "internal server error")
+		return &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error"}
 	}
 	if apiErr, ok := errors.AsType[*chat.Error](err); ok {
 		copy := *apiErr
