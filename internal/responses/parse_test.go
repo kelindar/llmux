@@ -715,7 +715,7 @@ func TestAdapterValidateMore(t *testing.T) {
 
 func TestResponseObject(t *testing.T) {
 	req := chat.Request{
-		Target:             "gpt-4.1",
+		Target:   "gpt-4.1",
 		Previous: new("prev"),
 		Controls: chat.Controls{
 			ParallelToolCall: new(false),

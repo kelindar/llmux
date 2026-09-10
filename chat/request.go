@@ -173,16 +173,16 @@ type Controls struct {
 // handler sets Retain before Accept; applications must treat the request as
 // read-only afterward.
 type Request struct {
-	Target             string            // Agent target name selected by the resolver.
-	Instructions       string            // System or developer instructions for the run.
-	Turn               []Item            // Items submitted in this request only.
-	Input              []Item            // Effective history+turn for Agent.Run.
-	Controls           Controls          // Generation settings.
-	Output             OutputSpec        // Declared output modalities and format.
-	Previous *string           // Prior response ID for continuation.
-	Store              *bool             // Wire store flag; nil when omitted.
-	Metadata           map[string]string // Request metadata; cloned into ResponseState at acceptance.
-	Retain             bool              // Effective content retention; set by the handler.
+	Target       string            // Agent target name selected by the resolver.
+	Instructions string            // System or developer instructions for the run.
+	Turn         []Item            // Items submitted in this request only.
+	Input        []Item            // Effective history+turn for Agent.Run.
+	Controls     Controls          // Generation settings.
+	Output       OutputSpec        // Declared output modalities and format.
+	Previous     *string           // Prior response ID for continuation.
+	Store        *bool             // Wire store flag; nil when omitted.
+	Metadata     map[string]string // Request metadata; cloned into ResponseState at acceptance.
+	Retain       bool              // Effective content retention; set by the handler.
 }
 
 // Limits bound request, media, event, and accumulated response memory.
