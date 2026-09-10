@@ -99,7 +99,7 @@ func (s *sseWriter) done() error {
 	return nil
 }
 
-func asAPIError(err error) *chat.Error { return internalprotocol.AsAPIError(err) }
+func asAPIError(err error) *chat.Error { return internalprotocol.AsError(err) }
 func anthropicErrorType(err *chat.Error) string {
 	return internalprotocol.AnthropicErrorType(err)
 }

@@ -447,7 +447,7 @@ func Run(ctx context.Context, req *chat.Request, agent chat.Agent, limits chat.L
 		case chat.StatusIncomplete:
 			outcome.StopReason = chat.StopLength
 		default:
-			outcome.StopReason = chat.StopStop
+			outcome.StopReason = chat.StopNormal
 			for _, item := range state.items {
 				if item.Type == chat.ItemFunctionCall {
 					outcome.StopReason = chat.StopToolCall

@@ -88,7 +88,7 @@ func writeProtocolError(w http.ResponseWriter, p protocol, err error) {
 	internalprotocol.WriteError(w, p, err)
 }
 
-func asAPIError(err error) *chat.Error { return internalprotocol.AsAPIError(err) }
+func asAPIError(err error) *chat.Error { return internalprotocol.AsError(err) }
 
 func anthropicErrorType(err *chat.Error) string {
 	return internalprotocol.AnthropicErrorType(err)

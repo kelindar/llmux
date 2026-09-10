@@ -284,10 +284,9 @@ func TestAdapterResponse(t *testing.T) {
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
-		response := value.(map[string]any)
-		output := response["output"].([]any)
+		output := value.(wireResponse).Output
 		require.Len(t, output, 1)
-		assert.Equal(t, "message", output[0].(map[string]any)["type"])
+		assert.Equal(t, "message", output[0].(wireMessageItem).Type)
 	})
 
 	t.Run("functionCall", func(t *testing.T) {
@@ -296,8 +295,8 @@ func TestAdapterResponse(t *testing.T) {
 		result := execution.Result{Items: []chat.Item{item}, Outcome: chat.Outcome{Status: chat.StatusCompleted}}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
-		output := value.(map[string]any)["output"].([]any)
-		assert.Equal(t, "function_call", output[0].(map[string]any)["type"])
+		output := value.(wireResponse).Output
+		assert.Equal(t, "function_call", output[0].(wireFunctionCallItem).Type)
 	})
 }
 
@@ -634,7 +633,7 @@ func TestAdapterResponseMore(t *testing.T) {
 		result := execution.Result{Outcome: chat.Outcome{}}
 		value, err := adapter.Response(chat.Request{}, result, meta)
 		require.NoError(t, err)
-		assert.Equal(t, string(chat.StatusCompleted), value.(map[string]any)["status"])
+		assert.Equal(t, string(chat.StatusCompleted), value.(wireResponse).Status)
 	})
 }
 
@@ -695,7 +694,7 @@ func TestResponseItemMore(t *testing.T) {
 	item.ID = "fco_1"
 	value, err := responseItem(item)
 	require.NoError(t, err)
-	assert.Equal(t, "function_call_output", value["type"])
+	assert.Equal(t, "function_call_output", value.(wireFunctionOutputItem).Type)
 
 	_, err = responseItem(chat.Item{Type: chat.ItemReasoning, Data: jsontext.Value(`{"x":1}`)})
 	requireAPIError(t, err, "unsupported", "output")
@@ -727,8 +726,8 @@ func TestResponseObject(t *testing.T) {
 		Status:   chat.StatusIncomplete,
 	}
 	value := responseObject(req, resp, []any{})
-	assert.Equal(t, false, value["parallel_tool_calls"])
-	assert.Equal(t, "prev", value["previous_response_id"])
+	assert.Equal(t, false, value.ParallelToolCalls)
+	assert.Equal(t, "prev", value.PreviousResponseID)
 }
 
 //go:fix inline
@@ -956,8 +955,9 @@ func TestResponseItemImage(t *testing.T) {
 	item := chat.Item{Type: chat.ItemMedia, ID: "img_1", Status: chat.StatusCompleted, Content: []chat.Part{chat.ImagePart(chat.InlineMedia("image/png", []byte{1, 2, 3}))}}
 	value, err := responseItem(item)
 	require.NoError(t, err)
-	assert.Equal(t, "image_generation_call", value["type"])
-	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte{1, 2, 3}), value["result"])
+	image := value.(wireImageItem)
+	assert.Equal(t, "image_generation_call", image.Type)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte{1, 2, 3}), image.Result)
 }
 
 func TestCoverageMore(t *testing.T) {
@@ -1086,7 +1086,7 @@ func TestCoverageMore(t *testing.T) {
 			Outcome: chat.Outcome{},
 		}, responseMeta{Response: chat.Response{ID: "resp_1", Created: 100, Target: "gpt-4.1"}})
 		require.NoError(t, err)
-		assert.Equal(t, "completed", value.(map[string]any)["status"])
+		assert.Equal(t, "completed", value.(wireResponse).Status)
 	})
 
 	t.Run("functionOutputItem", func(t *testing.T) {
@@ -1094,7 +1094,7 @@ func TestCoverageMore(t *testing.T) {
 		item.ID = "fco_1"
 		value, err := responseItem(item)
 		require.NoError(t, err)
-		assert.Equal(t, "function_call_output", value["type"])
+		assert.Equal(t, "function_call_output", value.(wireFunctionOutputItem).Type)
 	})
 
 	t.Run("toolsAndImageGen", func(t *testing.T) {

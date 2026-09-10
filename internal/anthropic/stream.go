@@ -22,19 +22,108 @@ type anthropicStream struct {
 	hadTool    bool
 }
 
+type streamEvent struct {
+	Type string `json:"type"`
+}
+
+type messageStartEvent struct {
+	Type    string              `json:"type"`
+	Message messageStartPayload `json:"message"`
+}
+
+type messageStartPayload struct {
+	ID           string         `json:"id"`
+	Type         string         `json:"type"`
+	Role         string         `json:"role"`
+	Model        string         `json:"model"`
+	Content      []any          `json:"content"`
+	StopReason   any            `json:"stop_reason"`
+	StopSequence any            `json:"stop_sequence"`
+	Usage        map[string]int `json:"usage"`
+}
+
+type contentBlockStartEvent struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock any    `json:"content_block"`
+}
+
+type textContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type toolContentBlock struct {
+	Type  string         `json:"type"`
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Input map[string]any `json:"input"`
+}
+
+type contentBlockDeltaEvent struct {
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+	Delta any    `json:"delta"`
+}
+
+type textDelta struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type inputJSONDelta struct {
+	Type        string `json:"type"`
+	PartialJSON string `json:"partial_json"`
+}
+
+type contentBlockStopEvent struct {
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+}
+
+type messageDeltaEvent struct {
+	Type  string           `json:"type"`
+	Delta messageDeltaBody `json:"delta"`
+	Usage map[string]int   `json:"usage"`
+}
+
+type messageDeltaBody struct {
+	StopReason   string `json:"stop_reason"`
+	StopSequence any    `json:"stop_sequence"`
+}
+
+type errorEvent struct {
+	Type  string       `json:"type"`
+	Error errorPayload `json:"error"`
+}
+
+type errorPayload struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
 // Started reports whether the Anthropic SSE stream has begun.
 func (s *anthropicStream) Started() bool { return s.writer.started }
 
-func (s *anthropicStream) emit(eventType string, value map[string]any) error {
-	value["type"] = eventType
-	return s.writer.write(eventType, value)
+func (s *anthropicStream) emit(eventType string, v any) error {
+	return s.writer.write(eventType, v)
 }
 
 func (s *anthropicStream) start() error {
 	if s.started {
 		return nil
 	}
-	if err := s.emit("message_start", map[string]any{"message": map[string]any{"id": s.meta.Response.ID, "type": "message", "role": "assistant", "model": s.meta.Response.Target, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": map[string]any{}}}); err != nil {
+	if err := s.emit("message_start", messageStartEvent{
+		Type: "message_start",
+		Message: messageStartPayload{
+			ID:      s.meta.Response.ID,
+			Type:    "message",
+			Role:    "assistant",
+			Model:   s.meta.Response.Target,
+			Content: []any{},
+			Usage:   map[string]int{},
+		},
+	}); err != nil {
 		return err
 	}
 	s.started = true
@@ -47,14 +136,18 @@ func (s *anthropicStream) openText() error {
 	}
 	s.textOpen = true
 	s.textID = newID()
-	return s.emit("content_block_start", map[string]any{"index": s.block, "content_block": map[string]any{"type": "text", "text": ""}})
+	return s.emit("content_block_start", contentBlockStartEvent{
+		Type:         "content_block_start",
+		Index:        s.block,
+		ContentBlock: textContentBlock{Type: "text", Text: ""},
+	})
 }
 
 func (s *anthropicStream) closeText() error {
 	if !s.textOpen {
 		return nil
 	}
-	if err := s.emit("content_block_stop", map[string]any{"index": s.block}); err != nil {
+	if err := s.emit("content_block_stop", contentBlockStopEvent{Type: "content_block_stop", Index: s.block}); err != nil {
 		return err
 	}
 	s.block++
@@ -81,7 +174,11 @@ func (s *anthropicStream) Event(event chat.Event) error {
 					return err
 				}
 				s.text.WriteString(part.Text)
-				if err := s.emit("content_block_delta", map[string]any{"index": s.block, "delta": map[string]any{"type": "text_delta", "text": part.Text}}); err != nil {
+				if err := s.emit("content_block_delta", contentBlockDeltaEvent{
+					Type:  "content_block_delta",
+					Index: s.block,
+					Delta: textDelta{Type: "text_delta", Text: part.Text},
+				}); err != nil {
 					return err
 				}
 			}
@@ -91,7 +188,11 @@ func (s *anthropicStream) Event(event chat.Event) error {
 				return err
 			}
 			if event.Item.Arguments != "" {
-				if err := s.emit("content_block_delta", map[string]any{"index": s.toolBlocks[event.Item.CallID], "delta": map[string]any{"type": "input_json_delta", "partial_json": event.Item.Arguments}}); err != nil {
+				if err := s.emit("content_block_delta", contentBlockDeltaEvent{
+					Type:  "content_block_delta",
+					Index: s.toolBlocks[event.Item.CallID],
+					Delta: inputJSONDelta{Type: "input_json_delta", PartialJSON: event.Item.Arguments},
+				}); err != nil {
 					return err
 				}
 			}
@@ -104,7 +205,11 @@ func (s *anthropicStream) Event(event chat.Event) error {
 			return err
 		}
 		s.text.WriteString(event.Delta)
-		return s.emit("content_block_delta", map[string]any{"index": s.block, "delta": map[string]any{"type": "text_delta", "text": event.Delta}})
+		return s.emit("content_block_delta", contentBlockDeltaEvent{
+			Type:  "content_block_delta",
+			Index: s.block,
+			Delta: textDelta{Type: "text_delta", Text: event.Delta},
+		})
 	case chat.EventTextDone:
 		return s.closeText()
 	case chat.EventToolCallStart:
@@ -115,7 +220,16 @@ func (s *anthropicStream) Event(event chat.Event) error {
 		s.toolBlocks[event.CallID] = s.block
 		s.toolNames[event.CallID] = event.Name
 		s.toolCalls[event.CallID] = event.CallID
-		if err := s.emit("content_block_start", map[string]any{"index": s.block, "content_block": map[string]any{"type": "tool_use", "id": event.CallID, "name": event.Name, "input": map[string]any{}}}); err != nil {
+		if err := s.emit("content_block_start", contentBlockStartEvent{
+			Type:  "content_block_start",
+			Index: s.block,
+			ContentBlock: toolContentBlock{
+				Type:  "tool_use",
+				ID:    event.CallID,
+				Name:  event.Name,
+				Input: map[string]any{},
+			},
+		}); err != nil {
 			return err
 		}
 		s.block++
@@ -125,14 +239,18 @@ func (s *anthropicStream) Event(event chat.Event) error {
 		if !ok {
 			return fmt.Errorf("unknown tool call %q", event.CallID)
 		}
-		return s.emit("content_block_delta", map[string]any{"index": index, "delta": map[string]any{"type": "input_json_delta", "partial_json": event.Delta}})
+		return s.emit("content_block_delta", contentBlockDeltaEvent{
+			Type:  "content_block_delta",
+			Index: index,
+			Delta: inputJSONDelta{Type: "input_json_delta", PartialJSON: event.Delta},
+		})
 	case chat.EventToolCallDone:
 		index, ok := s.toolBlocks[event.CallID]
 		if !ok {
 			return fmt.Errorf("unknown tool call %q", event.CallID)
 		}
 		delete(s.toolBlocks, event.CallID)
-		return s.emit("content_block_stop", map[string]any{"index": index})
+		return s.emit("content_block_stop", contentBlockStopEvent{Type: "content_block_stop", Index: index})
 	default:
 		return fmt.Errorf("unsupported Anthropic event %q", event.Type)
 	}
@@ -147,24 +265,25 @@ func (s *anthropicStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 		return err
 	}
 	for callID, index := range s.toolBlocks {
-		if err := s.emit("content_block_stop", map[string]any{"index": index}); err != nil {
+		if err := s.emit("content_block_stop", contentBlockStopEvent{Type: "content_block_stop", Index: index}); err != nil {
 			return err
 		}
 		delete(s.toolBlocks, callID)
 	}
 	stop := anthropicStopReason(outcome, s.hadTool || hasFunctionCall(items))
-	usage := map[string]any{}
+	usage := map[string]int{}
 	if outcome.Usage != nil {
 		usage["input_tokens"] = outcome.Usage.Input
 		usage["output_tokens"] = outcome.Usage.Output
 	}
-	if err := s.emit("message_delta", map[string]any{"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": usage}); err != nil {
+	if err := s.emit("message_delta", messageDeltaEvent{
+		Type:  "message_delta",
+		Delta: messageDeltaBody{StopReason: stop},
+		Usage: usage,
+	}); err != nil {
 		return err
 	}
-	if err := s.emit("message_stop", map[string]any{}); err != nil {
-		return err
-	}
-	return nil
+	return s.emit("message_stop", streamEvent{Type: "message_stop"})
 }
 
 func hasFunctionCall(items []chat.Item) bool {
@@ -185,8 +304,11 @@ func (s *anthropicStream) Fail(err error) error {
 	if startErr := s.start(); startErr != nil {
 		return startErr
 	}
-	if err := s.emit("error", map[string]any{"error": map[string]any{"type": anthropicErrorType(apiErr), "message": apiErr.Message}}); err != nil {
+	if err := s.emit("error", errorEvent{
+		Type:  "error",
+		Error: errorPayload{Type: anthropicErrorType(apiErr), Message: apiErr.Message},
+	}); err != nil {
 		return err
 	}
-	return s.emit("message_stop", map[string]any{})
+	return s.emit("message_stop", streamEvent{Type: "message_stop"})
 }

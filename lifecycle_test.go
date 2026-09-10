@@ -3,6 +3,7 @@ package llmux
 import (
 	"context"
 	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-
 	"time"
 
 	"github.com/kelindar/llmux/chat"
@@ -397,7 +397,7 @@ func TestLifecycle(t *testing.T) {
 			Target:      "agent/basic",
 			Status:      chat.StatusFailed,
 			Output:      []chat.Item{chat.MessageItem(chat.RoleAssistant, chat.TextPart("hi"))},
-			Error:       chat.NewAPIError(400, "invalid_request_error", "test_code", "", "public msg"),
+			Error:       chat.NewError(400, "invalid_request_error", "test_code", "", "public msg"),
 			Incomplete:  "max_output_tokens",
 			CompletedAt: 99,
 			Metadata:    map[string]string{"k": "v"},
@@ -405,18 +405,18 @@ func TestLifecycle(t *testing.T) {
 		}
 		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
-		value := body.(map[string]any)
+		value := jsonObject(t, body)
 		assert.Equal(t, "resp_get", value["id"])
-		assert.Equal(t, int64(7), value["created_at"])
+		assert.Equal(t, float64(7), value["created_at"])
 		assert.Equal(t, "failed", value["status"])
 		assert.Equal(t, true, value["store"])
-		assert.Equal(t, int64(99), value["completed_at"])
+		assert.Equal(t, float64(99), value["completed_at"])
 		errObj := value["error"].(map[string]any)
 		assert.Equal(t, "test_code", errObj["code"])
 		assert.Equal(t, "public msg", errObj["message"])
 		incomplete := value["incomplete_details"].(map[string]any)
 		assert.Equal(t, "max_output_tokens", incomplete["reason"])
-		assert.Equal(t, map[string]string{"k": "v"}, value["metadata"])
+		assert.Equal(t, map[string]any{"k": "v"}, value["metadata"])
 	})
 
 	t.Run("failed response retrieval", func(t *testing.T) {
@@ -425,13 +425,13 @@ func TestLifecycle(t *testing.T) {
 			Created:     10,
 			Target:      "agent/basic",
 			Status:      chat.StatusFailed,
-			Error:       chat.NewAPIError(503, "server_error", "upstream", "", "service unavailable"),
+			Error:       chat.NewError(503, "server_error", "upstream", "", "service unavailable"),
 			CompletedAt: 123,
 			Store:       true,
 		}
 		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
-		value := body.(map[string]any)
+		value := jsonObject(t, body)
 		assert.Equal(t, "failed", value["status"])
 		errObj := value["error"].(map[string]any)
 		assert.Equal(t, "upstream", errObj["code"])
@@ -442,7 +442,7 @@ func TestLifecycle(t *testing.T) {
 		var calls atomic.Int32
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
-			return chat.Outcome{}, chat.NewAPIError(503, "server_error", "upstream", "", "service unavailable")
+			return chat.Outcome{}, chat.NewError(503, "server_error", "upstream", "", "service unavailable")
 		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "fail-ord"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
@@ -461,7 +461,7 @@ func TestLifecycle(t *testing.T) {
 		var calls atomic.Int32
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
-			return chat.Outcome{}, chat.NewAPIError(503, "server_error", "upstream", "", "service unavailable")
+			return chat.Outcome{}, chat.NewError(503, "server_error", "upstream", "", "service unavailable")
 		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "fail-stream"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, headers)
@@ -485,7 +485,7 @@ func TestLifecycle(t *testing.T) {
 		}
 		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
-		value := body.(map[string]any)
+		value := jsonObject(t, body)
 		assert.Equal(t, "incomplete", value["status"])
 		incomplete := value["incomplete_details"].(map[string]any)
 		assert.Equal(t, "max_output_tokens", incomplete["reason"])
@@ -529,7 +529,7 @@ func TestLifecycle(t *testing.T) {
 		life.mu.Unlock()
 		retrieved, err := ResponsesBody(stored)
 		require.NoError(t, err)
-		retBody := retrieved.(map[string]any)
+		retBody := jsonObject(t, retrieved)
 		assert.EqualValues(t, completed, retBody["completed_at"])
 	})
 
@@ -537,7 +537,7 @@ func TestLifecycle(t *testing.T) {
 		resp := chat.Response{ID: "resp_run", Created: 1, Target: "agent/basic", Status: chat.StatusInProgress, Store: true}
 		body, err := ResponsesBody(resp)
 		require.NoError(t, err)
-		value := body.(map[string]any)
+		value := jsonObject(t, body)
 		assert.Equal(t, "in_progress", value["status"])
 		_, has := value["completed_at"]
 		assert.False(t, has)
@@ -741,4 +741,13 @@ func TestLifecycle(t *testing.T) {
 		assert.Empty(t, life.records)
 		assert.Empty(t, life.history)
 	})
+}
+
+func jsonObject(t *testing.T, v any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(v)
+	require.NoError(t, err)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(data, &out))
+	return out
 }

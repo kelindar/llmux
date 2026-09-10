@@ -15,7 +15,7 @@ func TestOutcomeValidate(t *testing.T) {
 	}{
 		"emptyOk": {},
 		"completedOk": {
-			outcome: Outcome{Status: StatusCompleted, StopReason: StopStop},
+			outcome: Outcome{Status: StatusCompleted, StopReason: StopNormal},
 		},
 		"usageOk": {
 			outcome: Outcome{
@@ -57,7 +57,7 @@ func TestAPIError(t *testing.T) {
 	var nilErr *Error
 	assert.Equal(t, "", nilErr.Error())
 
-	withMessage := NewAPIError(400, "invalid_request_error", "invalid_request", "field", "bad field")
+	withMessage := NewError(400, "invalid_request_error", "invalid_request", "field", "bad field")
 	assert.Equal(t, "bad field", withMessage.Error())
 	assert.Equal(t, 400, withMessage.Status)
 

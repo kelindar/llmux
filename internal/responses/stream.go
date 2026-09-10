@@ -24,14 +24,123 @@ type responsesStream struct {
 	started   bool
 }
 
+type responseLifecycleEvent struct {
+	Type           string       `json:"type"`
+	SequenceNumber int          `json:"sequence_number"`
+	Response       wireResponse `json:"response"`
+}
+
+type outputItemAddedEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	OutputIndex    int    `json:"output_index"`
+	Item           any    `json:"item"`
+}
+
+type outputItemDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	OutputIndex    int    `json:"output_index"`
+	Item           any    `json:"item"`
+}
+
+type contentPartAddedEvent struct {
+	Type           string         `json:"type"`
+	SequenceNumber int            `json:"sequence_number"`
+	ItemID         string         `json:"item_id"`
+	OutputIndex    int            `json:"output_index"`
+	ContentIndex   int            `json:"content_index"`
+	Part           wireOutputText `json:"part"`
+}
+
+type contentPartDoneEvent struct {
+	Type           string         `json:"type"`
+	SequenceNumber int            `json:"sequence_number"`
+	ItemID         string         `json:"item_id"`
+	OutputIndex    int            `json:"output_index"`
+	ContentIndex   int            `json:"content_index"`
+	Part           wireOutputText `json:"part"`
+}
+
+type outputTextDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	ContentIndex   int    `json:"content_index"`
+	Delta          string `json:"delta"`
+}
+
+type outputTextDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	ContentIndex   int    `json:"content_index"`
+	Text           string `json:"text"`
+}
+
+type functionCallArgumentsDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	Delta          string `json:"delta"`
+}
+
+type functionCallArgumentsDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	Arguments      string `json:"arguments"`
+}
+
+type reasoningSummaryPartAddedEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	SummaryIndex   int    `json:"summary_index"`
+}
+
+type reasoningSummaryTextDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	SummaryIndex   int    `json:"summary_index"`
+	Delta          string `json:"delta"`
+}
+
+type activityEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+	Activity       struct {
+		Name string         `json:"name"`
+		Data jsontext.Value `json:"data"`
+	} `json:"activity"`
+}
+
 // Started reports whether the Responses SSE stream has begun.
 func (s *responsesStream) Started() bool { return s.writer.started }
 
-func (s *responsesStream) emit(eventType string, value map[string]any) error {
-	value["type"] = eventType
-	value["sequence_number"] = s.sequence
+func (s *responsesStream) nextSeq() int {
+	n := s.sequence
 	s.sequence++
-	return s.writer.write(eventType, value)
+	return n
+}
+
+func (s *responsesStream) emit(eventType string, v any) error {
+	return s.writer.write(eventType, v)
+}
+
+func emptyOutputTextPart() wireOutputText {
+	return wireOutputText{Type: "output_text", Text: "", Annotations: []any{}}
+}
+
+func outputTextPart(text string) wireOutputText {
+	return wireOutputText{Type: "output_text", Text: text, Annotations: []any{}}
 }
 
 func (s *responsesStream) start() error {
@@ -42,10 +151,14 @@ func (s *responsesStream) start() error {
 	state.Status = chat.StatusInProgress
 	state.CompletedAt = 0
 	base := responseObject(s.request, state, []any{})
-	if err := s.emit("response.created", map[string]any{"response": base}); err != nil {
+	if err := s.emit("response.created", responseLifecycleEvent{
+		Type: "response.created", SequenceNumber: s.nextSeq(), Response: base,
+	}); err != nil {
 		return err
 	}
-	if err := s.emit("response.in_progress", map[string]any{"response": base}); err != nil {
+	if err := s.emit("response.in_progress", responseLifecycleEvent{
+		Type: "response.in_progress", SequenceNumber: s.nextSeq(), Response: base,
+	}); err != nil {
 		return err
 	}
 	s.started = true
@@ -60,7 +173,13 @@ func (s *responsesStream) addMessage(id string, index int) error {
 	if index >= s.next {
 		s.next = index + 1
 	}
-	return s.emit("response.output_item.added", map[string]any{"output_index": index, "item": map[string]any{"id": id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
+	return s.emit("response.output_item.added", outputItemAddedEvent{
+		Type: "response.output_item.added", SequenceNumber: s.nextSeq(), OutputIndex: index,
+		Item: wireMessageItem{
+			ID: id, Type: "message", Status: chat.StatusInProgress,
+			Role: chat.RoleAssistant, Content: []wireOutputText{},
+		},
+	})
 }
 
 // Event encodes one canonical event as a Responses SSE frame.
@@ -79,17 +198,25 @@ func (s *responsesStream) Event(event chat.Event) error {
 			if len(event.Item.Content) == 0 {
 				return s.finishMessage(event.Item.ID, index, nil)
 			}
-			parts := make([]any, 0, len(event.Item.Content))
+			parts := make([]wireOutputText, 0, len(event.Item.Content))
 			for contentIndex, part := range event.Item.Content {
 				if part.Type != chat.PartText {
 					return chat.Unsupported("output", "Responses message streaming only supports text parts")
 				}
-				parts = append(parts, map[string]any{"type": "output_text", "text": part.Text, "annotations": []any{}})
-				if err := s.emit("response.content_part.added", map[string]any{"item_id": event.Item.ID, "output_index": index, "content_index": contentIndex, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}); err != nil {
+				parts = append(parts, outputTextPart(part.Text))
+				if err := s.emit("response.content_part.added", contentPartAddedEvent{
+					Type: "response.content_part.added", SequenceNumber: s.nextSeq(),
+					ItemID: event.Item.ID, OutputIndex: index, ContentIndex: contentIndex,
+					Part: emptyOutputTextPart(),
+				}); err != nil {
 					return err
 				}
 				if part.Text != "" {
-					if err := s.emit("response.output_text.delta", map[string]any{"item_id": event.Item.ID, "output_index": index, "content_index": contentIndex, "delta": part.Text}); err != nil {
+					if err := s.emit("response.output_text.delta", outputTextDeltaEvent{
+						Type: "response.output_text.delta", SequenceNumber: s.nextSeq(),
+						ItemID: event.Item.ID, OutputIndex: index, ContentIndex: contentIndex,
+						Delta: part.Text,
+					}); err != nil {
 						return err
 					}
 				}
@@ -108,7 +235,10 @@ func (s *responsesStream) Event(event chat.Event) error {
 					s.toolArgs = make(map[string]string)
 				}
 				s.toolArgs[event.ItemID] = event.Item.Arguments
-				if err := s.emit("response.function_call_arguments.delta", map[string]any{"item_id": event.ItemID, "output_index": index, "delta": event.Item.Arguments}); err != nil {
+				if err := s.emit("response.function_call_arguments.delta", functionCallArgumentsDeltaEvent{
+					Type: "response.function_call_arguments.delta", SequenceNumber: s.nextSeq(),
+					ItemID: event.ItemID, OutputIndex: index, Delta: event.Item.Arguments,
+				}); err != nil {
 					return err
 				}
 			}
@@ -127,26 +257,41 @@ func (s *responsesStream) Event(event chat.Event) error {
 			index := s.next
 			s.indexes[item.ID] = index
 			s.next++
-			reasoning := map[string]any{"id": item.ID, "type": "reasoning", "status": "in_progress", "summary": []any{}}
-			if len(item.EncryptedContent) > 0 {
-				reasoning["encrypted_content"] = jsontext.Value(item.EncryptedContent)
+			reasoning := wireReasoningItem{
+				ID: item.ID, Type: "reasoning", Status: chat.StatusInProgress,
+				Summary: []wireSummaryPart{},
 			}
-			if err := s.emit("response.output_item.added", map[string]any{"output_index": index, "item": reasoning}); err != nil {
+			if len(item.EncryptedContent) > 0 {
+				reasoning.EncryptedContent = jsontext.Value(item.EncryptedContent)
+			}
+			if err := s.emit("response.output_item.added", outputItemAddedEvent{
+				Type: "response.output_item.added", SequenceNumber: s.nextSeq(),
+				OutputIndex: index, Item: reasoning,
+			}); err != nil {
 				return err
 			}
 			if len(item.Summary) > 0 {
-				if err := s.emit("response.reasoning_summary_part.added", map[string]any{"item_id": item.ID, "output_index": index, "summary_index": 0}); err != nil {
+				if err := s.emit("response.reasoning_summary_part.added", reasoningSummaryPartAddedEvent{
+					Type: "response.reasoning_summary_part.added", SequenceNumber: s.nextSeq(),
+					ItemID: item.ID, OutputIndex: index, SummaryIndex: 0,
+				}); err != nil {
 					return err
 				}
 				for _, part := range item.Summary {
-					if err := s.emit("response.reasoning_summary_text.delta", map[string]any{"item_id": item.ID, "output_index": index, "summary_index": 0, "delta": part.Text}); err != nil {
+					if err := s.emit("response.reasoning_summary_text.delta", reasoningSummaryTextDeltaEvent{
+						Type: "response.reasoning_summary_text.delta", SequenceNumber: s.nextSeq(),
+						ItemID: item.ID, OutputIndex: index, SummaryIndex: 0, Delta: part.Text,
+					}); err != nil {
 						return err
 					}
 				}
 			}
-			reasoning["status"] = "completed"
-			reasoning["summary"] = reasoningSummary(item.Summary)
-			return s.emit("response.output_item.done", map[string]any{"output_index": index, "item": reasoning})
+			reasoning.Status = chat.StatusCompleted
+			reasoning.Summary = reasoningSummary(item.Summary)
+			return s.emit("response.output_item.done", outputItemDoneEvent{
+				Type: "response.output_item.done", SequenceNumber: s.nextSeq(),
+				OutputIndex: index, Item: reasoning,
+			})
 		case chat.ItemMedia:
 			item := event.Item
 			if item.ID == "" {
@@ -163,12 +308,19 @@ func (s *responsesStream) Event(event chat.Event) error {
 			if err := s.addMessage(event.ItemID, index); err != nil {
 				return err
 			}
-			if err := s.emit("response.content_part.added", map[string]any{"item_id": event.ItemID, "output_index": index, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}); err != nil {
+			if err := s.emit("response.content_part.added", contentPartAddedEvent{
+				Type: "response.content_part.added", SequenceNumber: s.nextSeq(),
+				ItemID: event.ItemID, OutputIndex: index, ContentIndex: 0,
+				Part: emptyOutputTextPart(),
+			}); err != nil {
 				return err
 			}
 		}
 		s.text[event.ItemID] += event.Delta
-		return s.emit("response.output_text.delta", map[string]any{"item_id": event.ItemID, "output_index": index, "content_index": 0, "delta": event.Delta})
+		return s.emit("response.output_text.delta", outputTextDeltaEvent{
+			Type: "response.output_text.delta", SequenceNumber: s.nextSeq(),
+			ItemID: event.ItemID, OutputIndex: index, ContentIndex: 0, Delta: event.Delta,
+		})
 	case chat.EventTextDone:
 		index, ok := s.indexes[event.ItemID]
 		if !ok {
@@ -178,7 +330,7 @@ func (s *responsesStream) Event(event chat.Event) error {
 		if err := s.finishContentPart(event.ItemID, index, 0, textValue); err != nil {
 			return err
 		}
-		return s.finishMessage(event.ItemID, index, []any{map[string]any{"type": "output_text", "text": textValue, "annotations": []any{}}})
+		return s.finishMessage(event.ItemID, index, []wireOutputText{outputTextPart(textValue)})
 	case chat.EventToolCallStart:
 		return s.startTool(event.ItemID, event.CallID, event.Name, s.next)
 	case chat.EventToolCallDelta:
@@ -190,7 +342,10 @@ func (s *responsesStream) Event(event chat.Event) error {
 			s.toolArgs = make(map[string]string)
 		}
 		s.toolArgs[event.ItemID] += event.Delta
-		return s.emit("response.function_call_arguments.delta", map[string]any{"item_id": event.ItemID, "output_index": index, "delta": event.Delta})
+		return s.emit("response.function_call_arguments.delta", functionCallArgumentsDeltaEvent{
+			Type: "response.function_call_arguments.delta", SequenceNumber: s.nextSeq(),
+			ItemID: event.ItemID, OutputIndex: index, Delta: event.Delta,
+		})
 	case chat.EventToolCallDone:
 		index, ok := s.indexes[event.ItemID]
 		if !ok {
@@ -205,9 +360,12 @@ func (s *responsesStream) Event(event chat.Event) error {
 		if name == "" || strings.ContainsAny(name, "./ \t\r\n") {
 			return chat.Invalid("activity", "activity name must be a non-empty token without separators")
 		}
-		return s.emit("response.activity."+name, map[string]any{
-			"activity": map[string]any{"name": name, "data": jsontext.Value(event.Data)},
-		})
+		evt := activityEvent{
+			Type: "response.activity." + name, SequenceNumber: s.nextSeq(),
+		}
+		evt.Activity.Name = name
+		evt.Activity.Data = jsontext.Value(event.Data)
+		return s.emit("response.activity."+name, evt)
 	default:
 		return fmt.Errorf("unsupported Responses event %q", event.Type)
 	}
@@ -227,13 +385,19 @@ func (s *responsesStream) eventItem(item chat.Item) error {
 		}
 		index := s.next
 		s.next++
-		image := map[string]any{"id": item.ID, "type": "image_generation_call", "status": "in_progress"}
-		if err := s.emit("response.output_item.added", map[string]any{"output_index": index, "item": image}); err != nil {
+		image := wireImageItem{ID: item.ID, Type: "image_generation_call", Status: chat.StatusInProgress}
+		if err := s.emit("response.output_item.added", outputItemAddedEvent{
+			Type: "response.output_item.added", SequenceNumber: s.nextSeq(),
+			OutputIndex: index, Item: image,
+		}); err != nil {
 			return err
 		}
-		image["status"] = "completed"
-		image["result"] = base64.StdEncoding.EncodeToString(item.Content[0].Media.Data)
-		return s.emit("response.output_item.done", map[string]any{"output_index": index, "item": image})
+		image.Status = chat.StatusCompleted
+		image.Result = base64.StdEncoding.EncodeToString(item.Content[0].Media.Data)
+		return s.emit("response.output_item.done", outputItemDoneEvent{
+			Type: "response.output_item.done", SequenceNumber: s.nextSeq(),
+			OutputIndex: index, Item: image,
+		})
 	default:
 		return chat.Unsupported("output", "unsupported Responses output item")
 	}
@@ -247,7 +411,13 @@ func (s *responsesStream) startTool(itemID, callID, name string, index int) erro
 	s.toolNames[itemID] = name
 	s.toolCalls[itemID] = callID
 	s.next = index + 1
-	return s.emit("response.output_item.added", map[string]any{"output_index": index, "item": map[string]any{"id": itemID, "type": "function_call", "status": "in_progress", "call_id": callID, "name": name, "arguments": ""}})
+	return s.emit("response.output_item.added", outputItemAddedEvent{
+		Type: "response.output_item.added", SequenceNumber: s.nextSeq(), OutputIndex: index,
+		Item: wireFunctionCallItem{
+			ID: itemID, Type: "function_call", Status: chat.StatusInProgress,
+			CallID: callID, Name: name, Arguments: "",
+		},
+	})
 }
 
 func (s *responsesStream) finishTool(itemID, callID, name, arguments string, index int) error {
@@ -257,10 +427,19 @@ func (s *responsesStream) finishTool(itemID, callID, name, arguments string, ind
 	if name == "" {
 		name = s.toolNames[itemID]
 	}
-	if err := s.emit("response.function_call_arguments.done", map[string]any{"item_id": itemID, "output_index": index, "arguments": arguments}); err != nil {
+	if err := s.emit("response.function_call_arguments.done", functionCallArgumentsDoneEvent{
+		Type: "response.function_call_arguments.done", SequenceNumber: s.nextSeq(),
+		ItemID: itemID, OutputIndex: index, Arguments: arguments,
+	}); err != nil {
 		return err
 	}
-	if err := s.emit("response.output_item.done", map[string]any{"output_index": index, "item": map[string]any{"id": itemID, "type": "function_call", "status": "completed", "call_id": callID, "name": name, "arguments": arguments}}); err != nil {
+	if err := s.emit("response.output_item.done", outputItemDoneEvent{
+		Type: "response.output_item.done", SequenceNumber: s.nextSeq(), OutputIndex: index,
+		Item: wireFunctionCallItem{
+			ID: itemID, Type: "function_call", Status: chat.StatusCompleted,
+			CallID: callID, Name: name, Arguments: arguments,
+		},
+	}); err != nil {
 		return err
 	}
 	delete(s.indexes, itemID)
@@ -269,24 +448,37 @@ func (s *responsesStream) finishTool(itemID, callID, name, arguments string, ind
 	return nil
 }
 
-func (s *responsesStream) finishMessage(itemID string, index int, parts []any) error {
-	return s.emit("response.output_item.done", map[string]any{"output_index": index, "item": map[string]any{"id": itemID, "type": "message", "status": "completed", "role": "assistant", "content": parts}})
+func (s *responsesStream) finishMessage(itemID string, index int, parts []wireOutputText) error {
+	return s.emit("response.output_item.done", outputItemDoneEvent{
+		Type: "response.output_item.done", SequenceNumber: s.nextSeq(), OutputIndex: index,
+		Item: wireMessageItem{
+			ID: itemID, Type: "message", Status: chat.StatusCompleted,
+			Role: chat.RoleAssistant, Content: parts,
+		},
+	})
 }
 
 func (s *responsesStream) finishContentPart(itemID string, index, contentIndex int, textValue string) error {
-	if err := s.emit("response.output_text.done", map[string]any{"item_id": itemID, "output_index": index, "content_index": contentIndex, "text": textValue}); err != nil {
+	part := outputTextPart(textValue)
+	if err := s.emit("response.output_text.done", outputTextDoneEvent{
+		Type: "response.output_text.done", SequenceNumber: s.nextSeq(),
+		ItemID: itemID, OutputIndex: index, ContentIndex: contentIndex, Text: textValue,
+	}); err != nil {
 		return err
 	}
-	if err := s.emit("response.content_part.done", map[string]any{"item_id": itemID, "output_index": index, "content_index": contentIndex, "part": map[string]any{"type": "output_text", "text": textValue, "annotations": []any{}}}); err != nil {
+	if err := s.emit("response.content_part.done", contentPartDoneEvent{
+		Type: "response.content_part.done", SequenceNumber: s.nextSeq(),
+		ItemID: itemID, OutputIndex: index, ContentIndex: contentIndex, Part: part,
+	}); err != nil {
 		return err
 	}
 	return nil
 }
 
-func reasoningSummary(parts []chat.Part) []any {
-	values := make([]any, 0, len(parts))
+func reasoningSummary(parts []chat.Part) []wireSummaryPart {
+	values := make([]wireSummaryPart, 0, len(parts))
 	for _, part := range parts {
-		values = append(values, map[string]any{"type": "summary_text", "text": part.Text})
+		values = append(values, wireSummaryPart{Type: "summary_text", Text: part.Text})
 	}
 	return values
 }
@@ -316,14 +508,17 @@ func (s *responsesStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 	if len(state.Output) == 0 {
 		state.Output = items
 	}
-	event := "response.completed"
+	eventType := "response.completed"
 	switch state.Status {
 	case chat.StatusFailed, chat.StatusCancelled:
-		event = "response.failed"
+		eventType = "response.failed"
 	case chat.StatusIncomplete:
-		event = "response.incomplete"
+		eventType = "response.incomplete"
 	}
-	if err := s.emit(event, map[string]any{"response": responseObject(s.request, state, output)}); err != nil {
+	if err := s.emit(eventType, responseLifecycleEvent{
+		Type: eventType, SequenceNumber: s.nextSeq(),
+		Response: responseObject(s.request, state, output),
+	}); err != nil {
 		return err
 	}
 	return s.writer.done()
@@ -331,7 +526,7 @@ func (s *responsesStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 
 // Fail writes a Responses error event or HTTP error envelope.
 func (s *responsesStream) Fail(err error) error {
-	apiErr := internalprotocol.AsAPIError(err)
+	apiErr := internalprotocol.AsError(err)
 	if !s.writer.started {
 		return writeProtocolErrorAndReturn(s.writer.w, protocolResponses, apiErr)
 	}
@@ -348,7 +543,9 @@ func (s *responsesStream) Fail(err error) error {
 	}
 	s.meta.Response = state
 	response := responseObject(s.request, state, []any{})
-	if err := s.emit("response.failed", map[string]any{"response": response}); err != nil {
+	if err := s.emit("response.failed", responseLifecycleEvent{
+		Type: "response.failed", SequenceNumber: s.nextSeq(), Response: response,
+	}); err != nil {
 		return err
 	}
 	return s.writer.done()

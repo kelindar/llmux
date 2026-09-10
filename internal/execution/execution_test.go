@@ -40,7 +40,7 @@ func TestRun(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, result.Items, 1)
 				assert.Equal(t, "hello", result.Items[0].Content[0].Text)
-				assert.Equal(t, chat.StopStop, result.Outcome.StopReason)
+				assert.Equal(t, chat.StopNormal, result.Outcome.StopReason)
 			},
 		},
 		"agentError": {
@@ -473,7 +473,7 @@ func TestClosure(t *testing.T) {
 			check: func(t *testing.T, result Result, err error) {
 				require.NoError(t, err)
 				assert.Empty(t, result.Items)
-				assert.Equal(t, chat.StopStop, result.Outcome.StopReason)
+				assert.Equal(t, chat.StopNormal, result.Outcome.StopReason)
 			},
 		},
 		"interleaved text ids": {

@@ -245,11 +245,10 @@ func TestAdapterResponse(t *testing.T) {
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
-		response := value.(map[string]any)
-		content := response["content"].([]any)
-		require.Len(t, content, 1)
-		assert.Equal(t, "text", content[0].(map[string]any)["type"])
-		assert.Equal(t, "end_turn", response["stop_reason"])
+		response := value.(messageResponse)
+		require.Len(t, response.Content, 1)
+		assert.Equal(t, "text", response.Content[0].(textBlock).Type)
+		assert.Equal(t, "end_turn", response.StopReason)
 	})
 
 	t.Run("toolUse", func(t *testing.T) {
@@ -259,10 +258,9 @@ func TestAdapterResponse(t *testing.T) {
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
-		response := value.(map[string]any)
-		content := response["content"].([]any)
-		assert.Equal(t, "tool_use", content[0].(map[string]any)["type"])
-		assert.Equal(t, "tool_use", response["stop_reason"])
+		response := value.(messageResponse)
+		assert.Equal(t, "tool_use", response.Content[0].(toolUseBlock).Type)
+		assert.Equal(t, "tool_use", response.StopReason)
 	})
 
 	t.Run("withUsage", func(t *testing.T) {
@@ -272,8 +270,8 @@ func TestAdapterResponse(t *testing.T) {
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
-		usage := value.(map[string]any)["usage"].(map[string]any)
-		assert.Equal(t, 3, usage["input_tokens"])
+		require.NotNil(t, value.(messageResponse).Usage)
+		assert.Equal(t, 3, value.(messageResponse).Usage.InputTokens)
 	})
 
 	t.Run("unsupportedItem", func(t *testing.T) {
@@ -530,7 +528,7 @@ func TestAdapterResponseLength(t *testing.T) {
 	}
 	value, err := adapter.Response(chat.Request{}, result, meta)
 	require.NoError(t, err)
-	assert.Equal(t, "max_tokens", value.(map[string]any)["stop_reason"])
+	assert.Equal(t, "max_tokens", value.(messageResponse).StopReason)
 }
 
 func TestParseRequestRejects(t *testing.T) {
@@ -712,7 +710,7 @@ func TestAdapterResponseMore(t *testing.T) {
 			Outcome: chat.Outcome{Status: chat.StatusIncomplete, StopReason: chat.StopLength},
 		}, meta)
 		require.NoError(t, err)
-		assert.Equal(t, "max_tokens", value.(map[string]any)["stop_reason"])
+		assert.Equal(t, "max_tokens", value.(messageResponse).StopReason)
 	})
 
 	t.Run("mixedOutput", func(t *testing.T) {
@@ -724,8 +722,7 @@ func TestAdapterResponseMore(t *testing.T) {
 			Outcome: chat.Outcome{Status: chat.StatusCompleted, StopReason: chat.StopToolCall},
 		}, meta)
 		require.NoError(t, err)
-		content := value.(map[string]any)["content"].([]any)
-		require.Len(t, content, 2)
+		require.Len(t, value.(messageResponse).Content, 2)
 	})
 
 	t.Run("unsupportedItem", func(t *testing.T) {
@@ -783,7 +780,7 @@ func TestAdapterStreamFail(t *testing.T) {
 		rec := httptest.NewRecorder()
 		stream := adapter.Stream(rec, parsedRequest{}, &meta, limits)
 		require.NoError(t, stream.Event(TextDelta("x")))
-		require.NoError(t, stream.Fail(chat.NewAPIError(403, "permission_error", "forbidden", "", "denied")))
+		require.NoError(t, stream.Fail(chat.NewError(403, "permission_error", "forbidden", "", "denied")))
 		assert.Contains(t, rec.Body.String(), "permission_error")
 	})
 }

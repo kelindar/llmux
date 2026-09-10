@@ -21,8 +21,76 @@ type chatStream struct {
 	hadTool      bool
 }
 
+type chunkChoice struct {
+	Index        int        `json:"index"`
+	Delta        chunkDelta `json:"delta"`
+	FinishReason any        `json:"finish_reason"` // string or null
+}
+
+type chunkDelta struct {
+	Role      string          `json:"role,omitzero"`
+	Content   *string         `json:"content,omitzero"`
+	ToolCalls []chunkToolCall `json:"tool_calls,omitzero"`
+	Audio     *chunkAudio     `json:"audio,omitzero"`
+}
+
+type chunkToolCall struct {
+	Index    int         `json:"index"`
+	ID       string      `json:"id,omitzero"`
+	Type     string      `json:"type,omitzero"`
+	Function chunkToolFn `json:"function"`
+}
+
+type chunkToolFn struct {
+	Name      string `json:"name,omitzero"`
+	Arguments string `json:"arguments"`
+}
+
+type chunkAudio struct {
+	Data string `json:"data"`
+}
+
+// chunk is the default stream frame without a usage field.
+type chunk struct {
+	ID      string        `json:"id"`
+	Object  string        `json:"object"`
+	Created int64         `json:"created"`
+	Model   string        `json:"model"`
+	Choices []chunkChoice `json:"choices"`
+}
+
+// chunkWithUsage always emits usage (null until the final usage frame).
+type chunkWithUsage struct {
+	ID      string           `json:"id"`
+	Object  string           `json:"object"`
+	Created int64            `json:"created"`
+	Model   string           `json:"model"`
+	Choices []chunkChoice    `json:"choices"`
+	Usage   *completionUsage `json:"usage"`
+}
+
 // Started reports whether the Chat Completions SSE stream has begun.
 func (s *chatStream) Started() bool { return s.writer.started }
+
+func (s *chatStream) writeChunk(delta chunkDelta, finish any) error {
+	choice := chunkChoice{Index: 0, Delta: delta, FinishReason: finish}
+	if s.includeUsage {
+		return s.writer.write("", chunkWithUsage{
+			ID:      s.meta.Response.ID,
+			Object:  "chat.completion.chunk",
+			Created: s.meta.Response.Created,
+			Model:   s.meta.Response.Target,
+			Choices: []chunkChoice{choice},
+		})
+	}
+	return s.writer.write("", chunk{
+		ID:      s.meta.Response.ID,
+		Object:  "chat.completion.chunk",
+		Created: s.meta.Response.Created,
+		Model:   s.meta.Response.Target,
+		Choices: []chunkChoice{choice},
+	})
+}
 
 // Event encodes one canonical event as a Chat Completions chunk.
 func (s *chatStream) Event(event chat.Event) error {
@@ -32,23 +100,20 @@ func (s *chatStream) Event(event chat.Event) error {
 	if event.Type == chat.EventTextDone || event.Type == chat.EventToolCallDone {
 		return nil
 	}
-	chunk := map[string]any{"id": s.meta.Response.ID, "object": "chat.completion.chunk", "created": s.meta.Response.Created, "model": s.meta.Response.Target, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}}
-	if s.includeUsage {
-		chunk["usage"] = nil
-	}
-	delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	var delta chunkDelta
 	switch event.Type {
 	case chat.EventTextDelta:
 		if !s.roleSent {
-			delta["role"] = "assistant"
+			delta.Role = "assistant"
 			s.roleSent = true
 		}
-		delta["content"] = event.Delta
-		return s.writer.write("", chunk)
+		content := event.Delta
+		delta.Content = &content
+		return s.writeChunk(delta, nil)
 	case chat.EventToolCallStart:
 		s.hadTool = true
 		if !s.roleSent {
-			delta["role"] = "assistant"
+			delta.Role = "assistant"
 			s.roleSent = true
 		}
 		index := s.nextTool
@@ -58,40 +123,51 @@ func (s *chatStream) Event(event chat.Event) error {
 			s.toolIndexes[event.CallID] = index
 			s.nextTool++
 		}
-		delta["tool_calls"] = []any{map[string]any{"index": index, "id": event.CallID, "type": "function", "function": map[string]any{"name": event.Name, "arguments": ""}}}
-		return s.writer.write("", chunk)
+		delta.ToolCalls = []chunkToolCall{{
+			Index:    index,
+			ID:       event.CallID,
+			Type:     "function",
+			Function: chunkToolFn{Name: event.Name, Arguments: ""},
+		}}
+		return s.writeChunk(delta, nil)
 	case chat.EventToolCallDelta:
 		s.hadTool = true
 		index, ok := s.toolIndexes[event.CallID]
 		if !ok {
 			return fmt.Errorf("unknown tool call %q", event.CallID)
 		}
-		delta["tool_calls"] = []any{map[string]any{"index": index, "function": map[string]any{"arguments": event.Delta}}}
-		return s.writer.write("", chunk)
+		delta.ToolCalls = []chunkToolCall{{
+			Index:    index,
+			Function: chunkToolFn{Arguments: event.Delta},
+		}}
+		return s.writeChunk(delta, nil)
 	case chat.EventItem:
 		switch event.Item.Type {
 		case chat.ItemMessage:
 			for _, part := range event.Item.Content {
 				switch part.Type {
 				case chat.PartText:
+					delta = chunkDelta{}
 					if !s.roleSent {
-						delta["role"] = "assistant"
+						delta.Role = "assistant"
 						s.roleSent = true
 					}
-					delta["content"] = part.Text
-					if err := s.writer.write("", chunk); err != nil {
+					content := part.Text
+					delta.Content = &content
+					if err := s.writeChunk(delta, nil); err != nil {
 						return err
 					}
 				case chat.PartAudio:
 					if part.Media == nil || len(part.Media.Data) == 0 {
 						return errors.New("streamed audio output requires inline data")
 					}
+					delta = chunkDelta{}
 					if !s.roleSent {
-						delta["role"] = "assistant"
+						delta.Role = "assistant"
 						s.roleSent = true
 					}
-					delta["audio"] = map[string]any{"data": base64.StdEncoding.EncodeToString(part.Media.Data)}
-					if err := s.writer.write("", chunk); err != nil {
+					delta.Audio = &chunkAudio{Data: base64.StdEncoding.EncodeToString(part.Media.Data)}
+					if err := s.writeChunk(delta, nil); err != nil {
 						return err
 					}
 				default:
@@ -101,7 +177,7 @@ func (s *chatStream) Event(event chat.Event) error {
 		case chat.ItemFunctionCall:
 			s.hadTool = true
 			if !s.roleSent {
-				delta["role"] = "assistant"
+				delta.Role = "assistant"
 				s.roleSent = true
 			}
 			index := s.nextTool
@@ -112,8 +188,13 @@ func (s *chatStream) Event(event chat.Event) error {
 				s.toolIndexes[callID] = index
 				s.nextTool++
 			}
-			delta["tool_calls"] = []any{map[string]any{"index": index, "id": callID, "type": "function", "function": map[string]any{"name": event.Item.Name, "arguments": event.Item.Arguments}}}
-			return s.writer.write("", chunk)
+			delta.ToolCalls = []chunkToolCall{{
+				Index:    index,
+				ID:       callID,
+				Type:     "function",
+				Function: chunkToolFn{Name: event.Item.Name, Arguments: event.Item.Arguments},
+			}}
+			return s.writeChunk(delta, nil)
 		case chat.ItemMedia:
 			if len(event.Item.Content) != 1 || event.Item.Content[0].Type != chat.PartAudio {
 				return chat.Unsupported("output", "Chat Completions stream only supports audio media")
@@ -123,11 +204,11 @@ func (s *chatStream) Event(event chat.Event) error {
 				return errors.New("streamed audio output requires inline data")
 			}
 			if !s.roleSent {
-				delta["role"] = "assistant"
+				delta.Role = "assistant"
 				s.roleSent = true
 			}
-			delta["audio"] = map[string]any{"data": base64.StdEncoding.EncodeToString(part.Media.Data)}
-			return s.writer.write("", chunk)
+			delta.Audio = &chunkAudio{Data: base64.StdEncoding.EncodeToString(part.Media.Data)}
+			return s.writeChunk(delta, nil)
 		case chat.ItemReasoning:
 			return chat.Unsupported("output", "Chat Completions has no public reasoning-summary output mapping")
 		default:
@@ -142,16 +223,19 @@ func (s *chatStream) Event(event chat.Event) error {
 // Complete emits the final chunk and optional usage chunk for the stream.
 func (s *chatStream) Complete(outcome chat.Outcome, items []chat.Item) error {
 	finish := chatFinishReason(outcome, s.hadTool)
-	chunk := map[string]any{"id": s.meta.Response.ID, "object": "chat.completion.chunk", "created": s.meta.Response.Created, "model": s.meta.Response.Target, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}}
-	if s.includeUsage {
-		chunk["usage"] = nil
-	}
-	if err := s.writer.write("", chunk); err != nil {
+	if err := s.writeChunk(chunkDelta{}, finish); err != nil {
 		return err
 	}
 	if outcome.Usage != nil && s.includeUsage {
-		usageChunk := map[string]any{"id": s.meta.Response.ID, "object": "chat.completion.chunk", "created": s.meta.Response.Created, "model": s.meta.Response.Target, "choices": []any{}, "usage": chatUsage(outcome.Usage)}
-		if err := s.writer.write("", usageChunk); err != nil {
+		u := chatUsage(outcome.Usage)
+		if err := s.writer.write("", chunkWithUsage{
+			ID:      s.meta.Response.ID,
+			Object:  "chat.completion.chunk",
+			Created: s.meta.Response.Created,
+			Model:   s.meta.Response.Target,
+			Choices: []chunkChoice{},
+			Usage:   &u,
+		}); err != nil {
 			return err
 		}
 	}
@@ -160,15 +244,19 @@ func (s *chatStream) Complete(outcome chat.Outcome, items []chat.Item) error {
 
 // Fail writes a Chat Completions error chunk or HTTP error envelope.
 func (s *chatStream) Fail(err error) error {
-	apiErr := internalprotocol.AsAPIError(err)
+	apiErr := internalprotocol.AsError(err)
 	if !s.writer.started {
 		return writeProtocolErrorAndReturn(s.writer.w, protocolChat, apiErr)
 	}
-	payload := map[string]any{"error": map[string]any{"message": apiErr.Message, "type": apiErr.Type, "code": apiErr.Code}}
-	if apiErr.Param != "" {
-		payload["error"].(map[string]any)["param"] = apiErr.Param
+	type errBody struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+		Param   string `json:"param,omitzero"`
 	}
-	if err := s.writer.write("", payload); err != nil {
+	if err := s.writer.write("", struct {
+		Error errBody `json:"error"`
+	}{Error: errBody{Message: apiErr.Message, Type: apiErr.Type, Code: apiErr.Code, Param: apiErr.Param}}); err != nil {
 		return err
 	}
 	return s.writer.done()

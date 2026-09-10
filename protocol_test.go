@@ -332,7 +332,7 @@ func TestOutcomeDefaults(t *testing.T) {
 		status chat.Status
 		stop   chat.StopReason
 	}{
-		{status: chat.StatusCompleted, stop: chat.StopStop},
+		{status: chat.StatusCompleted, stop: chat.StopNormal},
 		{status: chat.StatusIncomplete, stop: chat.StopLength},
 		{status: chat.StatusFailed, stop: chat.StopError},
 		{status: chat.StatusCancelled, stop: chat.StopCancelled},

@@ -15,5 +15,5 @@ func TestEncodeResponse(t *testing.T) {
 		Outcome: chat.Outcome{Status: chat.StatusCompleted},
 	}, responseMeta{Response: chat.Response{ID: "id", Created: 1, Target: "m"}})
 	require.NoError(t, err)
-	assert.Equal(t, "response", body.(map[string]any)["object"])
+	assert.Equal(t, "response", body.(wireResponse).Object)
 }

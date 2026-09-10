@@ -272,11 +272,10 @@ func TestAdapterResponse(t *testing.T) {
 		}
 		value, err := adapter.Response(req, result, meta)
 		require.NoError(t, err)
-		response := value.(map[string]any)
-		choices := response["choices"].([]any)
-		message := choices[0].(map[string]any)["message"].(map[string]any)
-		assert.Equal(t, "hello", message["content"])
-		assert.Equal(t, "stop", choices[0].(map[string]any)["finish_reason"])
+		response := value.(completionResponse)
+		require.Len(t, response.Choices, 1)
+		assert.Equal(t, "hello", response.Choices[0].Message.Content)
+		assert.Equal(t, "stop", response.Choices[0].FinishReason)
 	})
 
 	t.Run("toolCall", func(t *testing.T) {

@@ -120,7 +120,7 @@ func TestAsAPIError(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			apiErr := AsAPIError(tc.err)
+			apiErr := AsError(tc.err)
 			require.NotNil(t, apiErr)
 			assert.Equal(t, tc.status, apiErr.Status)
 			assert.Equal(t, tc.typ, apiErr.Type)

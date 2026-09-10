@@ -10,7 +10,7 @@ import (
 type StopReason string
 
 const (
-	StopStop      StopReason = "stop"
+	StopNormal    StopReason = "stop"
 	StopToolCall  StopReason = "tool_call"
 	StopLength    StopReason = "length"
 	StopError     StopReason = "error"
@@ -47,7 +47,7 @@ func (o Outcome) Validate() error {
 	}
 	if o.StopReason != "" {
 		switch o.StopReason {
-		case StopStop, StopToolCall, StopLength, StopError, StopCancelled:
+		case StopNormal, StopToolCall, StopLength, StopError, StopCancelled:
 		default:
 			return fmt.Errorf("invalid outcome stop reason %q", o.StopReason)
 		}
@@ -143,17 +143,17 @@ func (e *Error) Error() string {
 // Unwrap returns the underlying error.
 func (e *Error) Unwrap() error { return e.Err }
 
-// NewAPIError constructs an APIError with the given response fields.
-func NewAPIError(status int, typ, code, param, message string) *Error {
+// NewError constructs an APIError with the given response fields.
+func NewError(status int, typ, code, param, message string) *Error {
 	return &Error{Status: status, Type: typ, Code: code, Param: param, Message: message}
 }
 
 // Invalid constructs a 400 invalid_request_error for param.
 func Invalid(param, message string) *Error {
-	return NewAPIError(400, "invalid_request_error", "invalid_request", param, message)
+	return NewError(400, "invalid_request_error", "invalid_request", param, message)
 }
 
 // Unsupported constructs a 400 unsupported invalid_request_error for param.
 func Unsupported(param, message string) *Error {
-	return NewAPIError(400, "invalid_request_error", "unsupported", param, message)
+	return NewError(400, "invalid_request_error", "unsupported", param, message)
 }

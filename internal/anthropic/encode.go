@@ -7,27 +7,56 @@ import (
 	"github.com/kelindar/llmux/internal/execution"
 )
 
+type messageResponse struct {
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Role         string          `json:"role"`
+	Model        string          `json:"model"`
+	Content      []any           `json:"content"`
+	StopReason   string          `json:"stop_reason"`
+	StopSequence any             `json:"stop_sequence"`
+	Usage        *anthropicUsage `json:"usage"`
+}
+
+type anthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+type textBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type toolUseBlock struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Input any    `json:"input"`
+}
+
 // Response builds a non-streaming Anthropic Messages response body.
 func (Adapter) Response(req chat.Request, result execution.Result, meta responseMeta) (any, error) {
 	content, tools, err := anthropicOutput(result.Items)
 	if err != nil {
 		return nil, err
 	}
-	value := map[string]any{
-		"id":            meta.Response.ID,
-		"type":          "message",
-		"role":          "assistant",
-		"model":         meta.Response.Target,
-		"content":       content,
-		"stop_reason":   anthropicStopReason(result.Outcome, tools),
-		"stop_sequence": nil,
-		"usage":         nil,
+	out := messageResponse{
+		ID:           meta.Response.ID,
+		Type:         "message",
+		Role:         "assistant",
+		Model:        meta.Response.Target,
+		Content:      content,
+		StopReason:   anthropicStopReason(result.Outcome, tools),
+		StopSequence: nil,
+		Usage:        nil,
 	}
 	if result.Outcome.Usage != nil {
-		value["usage"] = map[string]any{"input_tokens": result.Outcome.Usage.Input, "output_tokens": result.Outcome.Usage.Output}
+		out.Usage = &anthropicUsage{InputTokens: result.Outcome.Usage.Input, OutputTokens: result.Outcome.Usage.Output}
 	}
-	return value, nil
+	return out, nil
 }
+
 func anthropicOutput(items []chat.Item) ([]any, bool, error) {
 	content := make([]any, 0, len(items))
 	hasTools := false
@@ -38,14 +67,14 @@ func anthropicOutput(items []chat.Item) ([]any, bool, error) {
 				if part.Type != chat.PartText {
 					return nil, false, chat.Unsupported("output", "Anthropic output supports text only")
 				}
-				content = append(content, map[string]any{"type": "text", "text": part.Text})
+				content = append(content, textBlock{Type: "text", Text: part.Text})
 			}
 		case chat.ItemFunctionCall:
 			var input any
 			if err := json.Unmarshal([]byte(item.Arguments), &input); err != nil {
 				return nil, false, err
 			}
-			content = append(content, map[string]any{"type": "tool_use", "id": item.CallID, "name": item.Name, "input": input})
+			content = append(content, toolUseBlock{Type: "tool_use", ID: item.CallID, Name: item.Name, Input: input})
 			hasTools = true
 		default:
 			return nil, false, chat.Unsupported("output", "unsupported Anthropic output item")

@@ -105,7 +105,7 @@ func (s *SSEWriter) Write(event string, value any) error {
 		return err
 	}
 	if int64(len(data)) > s.limits.MaxEventBytes {
-		return chat.NewAPIError(http.StatusRequestEntityTooLarge, "invalid_request_error", "event_too_large", "", "stream event exceeds the configured limit")
+		return chat.NewError(http.StatusRequestEntityTooLarge, "invalid_request_error", "event_too_large", "", "stream event exceeds the configured limit")
 	}
 	if err := s.Start(); err != nil {
 		return err
@@ -140,7 +140,7 @@ func (s *SSEWriter) Started() bool { return s.started }
 
 // WriteError writes the canonical error envelope for the selected protocol.
 func WriteError(w http.ResponseWriter, kind Kind, err error) {
-	apiErr := AsAPIError(err)
+	apiErr := AsError(err)
 	if kind == Anthropic {
 		WriteJSON(w, apiErr.Status, map[string]any{
 			"type": "error",
@@ -164,10 +164,10 @@ func WriteError(w http.ResponseWriter, kind Kind, err error) {
 	WriteJSON(w, apiErr.Status, body)
 }
 
-// AsAPIError normalizes err into a chat.APIError with safe defaults.
-func AsAPIError(err error) *chat.Error {
+// AsError normalizes err into a chat.APIError with safe defaults.
+func AsError(err error) *chat.Error {
 	if err == nil {
-		return chat.NewAPIError(http.StatusInternalServerError, "server_error", "server_error", "", "internal server error")
+		return chat.NewError(http.StatusInternalServerError, "server_error", "server_error", "", "internal server error")
 	}
 	if apiErr, ok := errors.AsType[*chat.Error](err); ok {
 		copy := *apiErr

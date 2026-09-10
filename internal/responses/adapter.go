@@ -47,10 +47,18 @@ func parseMediaURL(value, detail string) (chat.Media, error) {
 func parseFileMedia(object map[string]jsontext.Value, param string) (chat.Media, string, error) {
 	return wire.ParseFileMedia(object, param)
 }
-func inputTextParts(parts []chat.Part) []map[string]any  { return wire.InputTextParts(parts) }
-func outputTextParts(parts []chat.Part) []map[string]any { return wire.OutputTextParts(parts) }
-func collectText(parts []chat.Part) string               { return wire.CollectText(parts) }
-func mediaDataURL(media chat.Media) (string, error)      { return wire.MediaDataURL(media) }
+func inputTextParts(parts []chat.Part) []map[string]any { return wire.InputTextParts(parts) }
+func outputTextParts(parts []chat.Part) []wireOutputText {
+	out := make([]wireOutputText, 0, len(parts))
+	for _, part := range parts {
+		if part.Type == chat.PartText {
+			out = append(out, wireOutputText{Type: "output_text", Text: part.Text, Annotations: []any{}})
+		}
+	}
+	return out
+}
+func collectText(parts []chat.Part) string          { return wire.CollectText(parts) }
+func mediaDataURL(media chat.Media) (string, error) { return wire.MediaDataURL(media) }
 func fmtError(param, message string, err error) *chat.Error {
 	return wire.Error(param, message, err)
 }
