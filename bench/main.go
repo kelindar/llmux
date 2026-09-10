@@ -1,0 +1,141 @@
+// Command bench measures the contract, protocol adapters, and end-to-end
+// handler paths. Run it with `go run ./bench`.
+package main
+
+import (
+	"bytes"
+	"context"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"time"
+
+	"github.com/kelindar/bench"
+	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/internal/anthropic"
+	"github.com/kelindar/llmux/internal/chat"
+	"github.com/kelindar/llmux/internal/execution"
+	"github.com/kelindar/llmux/internal/responses"
+	"github.com/kelindar/llmux/internal/wire"
+)
+
+var keep any
+
+func main() {
+	chatBody := []byte(`{"model":"bench","messages":[{"role":"user","content":"hello"}]}`)
+	responsesBody := []byte(`{"model":"bench","input":"hello"}`)
+	anthropicBody := []byte(`{"model":"bench","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+
+	chatObject, err := wire.DecodeObject(chatBody)
+	if err != nil {
+		panic(err)
+	}
+	responsesObject, err := wire.DecodeObject(responsesBody)
+	if err != nil {
+		panic(err)
+	}
+	anthropicObject, err := wire.DecodeObject(anthropicBody)
+	if err != nil {
+		panic(err)
+	}
+
+	agent := llmux.AgentFunc(func(ctx context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
+		return llmux.Outcome{}, llmux.EmitText(emit, "ok")
+	})
+	resolver := llmux.ResolverFunc(func(context.Context, string) (llmux.Agent, llmux.Capabilities, error) {
+		return agent, llmux.Capabilities{}, nil
+	})
+	handler := llmux.New(resolver,
+		llmux.WithModels(llmux.Model{ID: "bench"}),
+		llmux.WithTranscriber(llmux.TranscriberFunc(func(context.Context, llmux.TranscriptionRequest) (llmux.Transcription, error) {
+			return llmux.Transcription{Text: "ok"}, nil
+		})),
+		llmux.WithSpeaker(llmux.SpeakerFunc(func(context.Context, llmux.SpeechRequest) (llmux.Speech, error) {
+			return llmux.Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
+		})),
+	)
+
+	bench.Run(func(b *bench.B) {
+		b.Run("wire/decode", func(int) {
+			keep, _ = wire.DecodeObject(chatBody)
+		})
+
+		b.Run("exec/run", func(int) {
+			result, err := execution.Run(context.Background(), &llmux.Request{Target: "bench"}, agent, llmux.DefaultLimits(), nil)
+			if err != nil {
+				panic(err)
+			}
+			keep = result
+		})
+		b.Run("chat/models", func(int) { keep = serve(handler, "/v1/models", nil, "GET") })
+		b.Run("chat/parse", func(int) {
+			keep, _ = chat.ParseRequest(chatObject)
+		})
+		b.Run("chat/completion", func(int) { keep = serve(handler, "/v1/chat/completions", chatBody, "") })
+		b.Run("chat/stream", func(int) {
+			keep = serve(handler, "/v1/chat/completions", []byte(`{"model":"bench","stream":true,"messages":[{"role":"user","content":"hello"}]}`), "")
+		})
+		b.Run("responses/parse", func(int) {
+			keep, _ = responses.ParseRequest(responsesObject)
+		})
+		b.Run("responses/http", func(int) { keep = serve(handler, "/v1/responses", responsesBody, "") })
+		b.Run("responses/stream", func(int) {
+			keep = serve(handler, "/v1/responses", []byte(`{"model":"bench","stream":true,"input":"hello"}`), "")
+		})
+		b.Run("anthropic/parse", func(int) {
+			keep, _ = anthropic.ParseRequest(anthropicObject)
+		})
+		b.Run("anthropic/http", func(int) { keep = serve(handler, "/v1/messages", anthropicBody, "anthropic-version: 2023-06-01") })
+		b.Run("anthropic/stream", func(int) {
+			keep = serve(handler, "/v1/messages", []byte(`{"model":"bench","stream":true,"max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`), "anthropic-version: 2023-06-01")
+		})
+		b.Run("audio/speech", func(int) {
+			keep = serve(handler, "/v1/audio/speech", []byte(`{"model":"bench","input":"hello","voice":"alloy"}`), "")
+		})
+		b.Run("audio/transcribe", func(int) { keep = serveTranscription(handler) })
+	}, bench.WithSamples(50), bench.WithDuration(10*time.Millisecond))
+}
+
+func serve(handler http.Handler, path string, body []byte, header string) *httptest.ResponseRecorder {
+	method := http.MethodPost
+	if header == "GET" {
+		method = http.MethodGet
+	}
+	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if header != "" && header != "GET" {
+		key, value, _ := bytes.Cut([]byte(header), []byte(":"))
+		request.Header.Set(string(key), string(bytes.TrimSpace(value)))
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		panic(response.Code)
+	}
+	return response
+}
+
+func serveTranscription(handler http.Handler) *httptest.ResponseRecorder {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "bench"); err != nil {
+		panic(err)
+	}
+	file, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := file.Write([]byte("audio")); err != nil {
+		panic(err)
+	}
+	if err := writer.Close(); err != nil {
+		panic(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		panic(response.Code)
+	}
+	return response
+}

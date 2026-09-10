@@ -1,0 +1,846 @@
+package chat
+
+import (
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/kelindar/llmux/contract"
+	"github.com/kelindar/llmux/internal/execution"
+	internalprotocol "github.com/kelindar/llmux/internal/protocol"
+	"github.com/kelindar/llmux/internal/wire"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
+	t.Helper()
+	object, err := wire.DecodeObject([]byte(raw))
+	require.NoError(t, err)
+	return object
+}
+
+func requireAPIError(t *testing.T, err error, code, param string) {
+	t.Helper()
+	require.Error(t, err)
+	apiErr, ok := errors.AsType[*contract.APIError](err)
+	require.True(t, ok, "expected contract.APIError, got %T", err)
+	assert.Equal(t, code, apiErr.Code)
+	if param != "" {
+		assert.Equal(t, param, apiErr.Param)
+	}
+}
+
+func TestParseRequest(t *testing.T) {
+	cases := map[string]struct {
+		body    string
+		wantErr bool
+		code    string
+		param   string
+		check   func(t *testing.T, parsed parsedRequest)
+	}{
+		"minimalUserMessage": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, internalprotocol.Chat, parsed.Kind)
+				assert.Equal(t, "gpt-4", parsed.Request.Target)
+				assert.False(t, parsed.Stream)
+				require.Len(t, parsed.Request.Input, 1)
+				assert.Equal(t, contract.RoleUser, parsed.Request.Input[0].Role)
+			},
+		},
+		"streamWithTools": {
+			body: `{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"search","description":"find","parameters":{"type":"object"}}}],"tool_choice":"auto","stop":"END","max_tokens":128,"temperature":0.5,"top_p":0.9}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.True(t, parsed.Stream)
+				require.Len(t, parsed.Request.Controls.Tools, 1)
+				assert.Equal(t, "search", parsed.Request.Controls.Tools[0].Name)
+				require.NotNil(t, parsed.Request.Controls.ToolChoice)
+				assert.Equal(t, "auto", parsed.Request.Controls.ToolChoice.Mode)
+				assert.Equal(t, []string{"END"}, parsed.Request.Controls.Stop)
+			},
+		},
+		"assistantToolCalls": {
+			body: `{"model":"gpt-4","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"fn","arguments":"{}"}}]}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Input, 1)
+				assert.Equal(t, contract.ItemFunctionCall, parsed.Request.Input[0].Type)
+				assert.Equal(t, "call_1", parsed.Request.Input[0].CallID)
+			},
+		},
+		"toolRoleOutput": {
+			body: `{"model":"gpt-4","messages":[{"role":"tool","tool_call_id":"call_1","content":"result"}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Input, 1)
+				assert.Equal(t, contract.ItemFunctionCallOutput, parsed.Request.Input[0].Type)
+			},
+		},
+		"responseFormatJsonSchema": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"out","schema":{"type":"object","properties":{"a":{"type":"string"}}}}}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "json_schema", parsed.Request.Output.Format)
+				require.NotNil(t, parsed.Request.Controls.Structured)
+				assert.Equal(t, "out", parsed.Request.Controls.Structured.Name)
+			},
+		},
+		"modalitiesWithAudio": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"speak"}],"modalities":["text","audio"],"audio":{"voice":"alloy","format":"wav"}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.True(t, parsed.Request.Output.Modalities.Has(contract.ModalityText))
+				assert.True(t, parsed.Request.Output.Modalities.Has(contract.ModalityAudio))
+				require.NotNil(t, parsed.Request.Controls.Audio)
+				assert.Equal(t, "alloy", parsed.Request.Controls.Audio.Voice)
+			},
+		},
+		"streamOptionsUsage": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stream_options":{"include_usage":true}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.True(t, parsed.Request.Controls.IncludeUsage)
+			},
+		},
+		"stopArray": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stop":["a","b"]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, []string{"a", "b"}, parsed.Request.Controls.Stop)
+			},
+		},
+		"toolChoiceFunction": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":{"type":"function","function":{"name":"search"}}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.ToolChoice)
+				assert.Equal(t, "function", parsed.Request.Controls.ToolChoice.Mode)
+				assert.Equal(t, "search", parsed.Request.Controls.ToolChoice.Name)
+			},
+		},
+		"xExtensionAllowed": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"x-custom":"value"}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.Extensions)
+				assert.Contains(t, parsed.Request.Controls.Extensions, "x-custom")
+			},
+		},
+		"unknownField": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"bogus":1}`,
+			wantErr: true,
+			code:    "unsupported",
+			param:   "bogus",
+		},
+		"missingModel": {
+			body:    `{"messages":[{"role":"user","content":"x"}]}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "model",
+		},
+		"missingMessages": {
+			body:    `{"model":"gpt-4"}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "messages",
+		},
+		"emptyMessages": {
+			body:    `{"model":"gpt-4","messages":[]}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "messages",
+		},
+		"invalidToolChoice": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":"maybe"}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "tool_choice",
+		},
+		"audioWithoutControls": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"modalities":["text","audio"]}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "audio",
+		},
+		"unsupportedModality": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"modalities":["video"]}`,
+			wantErr: true,
+			code:    "unsupported",
+			param:   "modalities",
+		},
+		"invalidStop": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stop":123}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "stop",
+		},
+		"streamOptionsUnknown": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stream_options":{"bogus":true}}`,
+			wantErr: true,
+			code:    "unsupported",
+			param:   "bogus",
+		},
+		"invalidToolArguments": {
+			body:    `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"not-json"}}]}]}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "messages.tool_calls.function.arguments",
+		},
+		"unsupportedToolType": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tools":[{"type":"code_interpreter"}]}`,
+			wantErr: true,
+			code:    "unsupported",
+			param:   "tools",
+		},
+		"bothMaxTokens": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"max_tokens":10,"max_completion_tokens":20}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "max_completion_tokens",
+		},
+		"unsupportedUserField": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"user":"u1"}`,
+			wantErr: true,
+			code:    "unsupported",
+			param:   "user",
+		},
+		"unsupportedLogprobs": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"logprobs":true}`,
+			wantErr: true,
+			code:    "unsupported",
+			param:   "logprobs",
+		},
+		"invalidRole": {
+			body:    `{"model":"gpt-4","messages":[{"role":"bogus","content":"x"}]}`,
+			wantErr: true,
+			code:    "invalid_request",
+			param:   "messages.role",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := ParseRequest(decodeObject(t, tc.body))
+			if tc.wantErr {
+				requireAPIError(t, err, tc.code, tc.param)
+				return
+			}
+			require.NoError(t, err)
+			if tc.check != nil {
+				tc.check(t, parsed)
+			}
+		})
+	}
+}
+
+func TestAdapterValidateEvent(t *testing.T) {
+	adapter := Adapter{}
+	cases := map[string]struct {
+		event   contract.Event
+		wantErr bool
+	}{
+		"textMessage": {
+			event: contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("hi"))},
+		},
+		"toolCall": {
+			event: contract.ToolCall("c1", "fn", `{}`),
+		},
+		"reasoningRejected": {
+			event:   contract.Event{Type: contract.EventReasoning, Item: contract.Item{Type: contract.ItemReasoning}},
+			wantErr: true,
+		},
+		"imageMediaRejected": {
+			event:   contract.MediaOutput(contract.ImagePart(contract.InlineMedia("image/png", []byte{1}))),
+			wantErr: true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := adapter.ValidateEvent(tc.event)
+			if tc.wantErr {
+				requireAPIError(t, err, "unsupported", "output")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestAdapterResponse(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	req := contract.Request{Target: "gpt-4"}
+
+	t.Run("textOnly", func(t *testing.T) {
+		result := execution.Result{
+			Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.TextPart("hello"))},
+			Outcome: contract.Outcome{Status: contract.StatusCompleted},
+		}
+		value, err := adapter.Response(req, result, meta)
+		require.NoError(t, err)
+		response := value.(map[string]any)
+		choices := response["choices"].([]any)
+		message := choices[0].(map[string]any)["message"].(map[string]any)
+		assert.Equal(t, "hello", message["content"])
+		assert.Equal(t, "stop", choices[0].(map[string]any)["finish_reason"])
+	})
+
+	t.Run("toolCall", func(t *testing.T) {
+		result := execution.Result{
+			Items:   []contract.Item{contract.FunctionCallItem("call_1", "search", `{"q":"x"}`)},
+			Outcome: contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall},
+		}
+		value, err := adapter.Response(req, result, meta)
+		require.NoError(t, err)
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"tool_calls"`)
+		assert.Contains(t, string(data), `"call_1"`)
+	})
+
+	t.Run("mediaItem", func(t *testing.T) {
+		audio := contract.InlineMedia("audio/wav", []byte{1})
+		audio.Format = "wav"
+		result := execution.Result{
+			Items:   []contract.Item{contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.AudioPart(audio)}}},
+			Outcome: contract.Outcome{Status: contract.StatusCompleted},
+		}
+		value, err := adapter.Response(contract.Request{}, result, meta)
+		require.NoError(t, err)
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"audio"`)
+	})
+
+	t.Run("reasoningRejected", func(t *testing.T) {
+		result := execution.Result{
+			Items:   []contract.Item{contract.Item{Type: contract.ItemReasoning}},
+			Outcome: contract.Outcome{Status: contract.StatusCompleted},
+		}
+		_, err := adapter.Response(contract.Request{}, result, meta)
+		requireAPIError(t, err, "unsupported", "output")
+	})
+}
+
+func TestAdapterStream(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	req := contract.Request{Target: "gpt-4", Controls: contract.Controls{IncludeUsage: true}}
+	limits := contract.DefaultLimits()
+
+	t.Run("textDelta", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, req, meta, limits)
+		require.NoError(t, stream.Event(TextDelta("hel")))
+		require.NoError(t, stream.Event(TextDelta("lo")))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil))
+		assert.Contains(t, rec.Body.String(), "chat.completion.chunk")
+		assert.Contains(t, rec.Body.String(), "[DONE]")
+	})
+
+	t.Run("toolCallFlow", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, req, meta, limits)
+		require.NoError(t, stream.Event(contract.ToolCallStart("call_1", "search")))
+		require.NoError(t, stream.Event(ToolCallDelta("call_1", `{"q"`)))
+		require.NoError(t, stream.Event(ToolCallDelta("call_1", `:"x"}`)))
+		require.NoError(t, stream.Event(contract.ToolCallDone("call_1")))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall}, nil))
+		assert.Contains(t, rec.Body.String(), "tool_calls")
+		assert.Equal(t, "tool_calls", finishReasonFromStream(t, rec.Body.String()))
+	})
+}
+
+func finishReasonFromStream(t *testing.T, body string) string {
+	t.Helper()
+	for _, line := range splitLines(body) {
+		if len(line) < 6 || line[:5] != "data:" {
+			continue
+		}
+		data := line[6:]
+		if data == "[DONE]" {
+			continue
+		}
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		choices, ok := chunk["choices"].([]any)
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		if reason, ok := choices[0].(map[string]any)["finish_reason"]; ok && reason != nil {
+			return reason.(string)
+		}
+	}
+	t.Fatal("finish_reason not found")
+	return ""
+}
+
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
+}
+
+func InlineMedia(mime string, data []byte) contract.Media {
+	return contract.InlineMedia(mime, data)
+}
+
+func ImagePart(media contract.Media) contract.Part {
+	return contract.ImagePart(media)
+}
+
+func TextDelta(text string) contract.Event {
+	return contract.Event{Type: contract.EventTextDelta, Delta: text}
+}
+
+func ToolCallStart(callID, name string) contract.Event {
+	return contract.Event{Type: contract.EventToolCallStart, CallID: callID, Name: name}
+}
+
+func ToolCallDelta(callID, delta string) contract.Event {
+	return contract.Event{Type: contract.EventToolCallDelta, CallID: callID, Delta: delta}
+}
+
+func ToolCallDone(callID string) contract.Event {
+	return contract.Event{Type: contract.EventToolCallDone, CallID: callID}
+}
+
+func TestParseRequestExtra(t *testing.T) {
+	cases := map[string]struct {
+		body    string
+		wantErr bool
+		code    string
+		param   string
+		check   func(t *testing.T, parsed parsedRequest)
+	}{
+		"jsonObjectFormat": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_object"}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "json_object", parsed.Request.Output.Format)
+				require.NotNil(t, parsed.Request.Controls.Structured)
+			},
+		},
+		"textFormat": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"text"}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "text", parsed.Request.Output.Format)
+			},
+		},
+		"toolChoiceByName": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":{"type":"function","name":"search"}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "search", parsed.Request.Controls.ToolChoice.Name)
+			},
+		},
+		"parallelToolCalls": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"parallel_tool_calls":false}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.ParallelToolCall)
+				assert.False(t, *parsed.Request.Controls.ParallelToolCall)
+			},
+		},
+		"storeAndMetadata": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"store":true,"metadata":{"k":"v"},"reasoning_effort":"medium"}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.Store)
+				assert.True(t, *parsed.Request.Controls.Store)
+				assert.Equal(t, "v", parsed.Request.Controls.Metadata["k"])
+				require.NotNil(t, parsed.Request.Controls.Reasoning)
+			},
+		},
+		"imageContent": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, contract.PartImage, parsed.Request.Input[0].Content[0].Type)
+			},
+		},
+		"audioInput": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"YQ==","format":"wav"}}]}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, contract.PartAudio, parsed.Request.Input[0].Content[0].Type)
+			},
+		},
+		"assistantEmptyContent": {
+			body: `{"model":"gpt-4","messages":[{"role":"assistant","content":""}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Input, 1)
+			},
+		},
+		"unsupportedResponseFormat": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"grammar"}}`,
+			wantErr: true, code: "unsupported", param: "response_format",
+		},
+		"invalidJsonSchema": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"x"}}}`,
+			wantErr: true, code: "invalid_request", param: "response_format.json_schema.schema",
+		},
+		"unsupportedN": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"n":2}`,
+			wantErr: true, code: "unsupported", param: "n",
+		},
+		"topLogprobs": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"top_logprobs":5}`,
+			wantErr: true, code: "unsupported", param: "top_logprobs",
+		},
+		"invalidMaxTokens": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"max_tokens":0}`,
+			wantErr: true, code: "invalid_request", param: "max_tokens",
+		},
+		"invalidTemperature": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"temperature":3}`,
+			wantErr: true, code: "invalid_request", param: "temperature",
+		},
+		"unsupportedToolCallType": {
+			body:    `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":"custom","function":{"name":"f","arguments":"{}"}}]}]}`,
+			wantErr: true, code: "unsupported", param: "messages.tool_calls.type",
+		},
+		"emptyModalities": {
+			body:    `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"modalities":[]}`,
+			wantErr: true, code: "invalid_request", param: "modalities",
+		},
+		"fileContent": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"file","file":{"file_data":"YQ==","filename":"a.txt"}}]}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, contract.PartFile, parsed.Request.Input[0].Content[0].Type)
+			},
+		},
+		"toolChoiceNone": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":"none"}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "none", parsed.Request.Controls.ToolChoice.Mode)
+			},
+		},
+		"toolChoiceLegacy": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":{"type":"function","name":"search"}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "search", parsed.Request.Controls.ToolChoice.Name)
+			},
+		},
+		"toolChoiceRequired": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":"required"}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, "required", parsed.Request.Controls.ToolChoice.Mode)
+			},
+		},
+		"jsonSchemaFull": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"out","description":"desc","schema":{"type":"object"},"strict":true}}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.Structured)
+				assert.Equal(t, "desc", parsed.Request.Controls.Structured.Description)
+				assert.True(t, parsed.Request.Controls.Structured.Strict)
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := ParseRequest(decodeObject(t, tc.body))
+			if tc.wantErr {
+				requireAPIError(t, err, tc.code, tc.param)
+				return
+			}
+			require.NoError(t, err)
+			if tc.check != nil {
+				tc.check(t, parsed)
+			}
+		})
+	}
+}
+
+func TestNewAdapter(t *testing.T) {
+	assert.NotNil(t, NewAdapter())
+}
+
+func TestAdapterValidateMore(t *testing.T) {
+	adapter := Adapter{}
+	audio := contract.InlineMedia("audio/wav", []byte{1, 2, 3})
+	audio.Format = "wav"
+	cases := map[string]struct {
+		event   contract.Event
+		wantErr bool
+	}{
+		"audioMessagePart": {
+			event: contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio))},
+		},
+		"audioMediaOutput": {
+			event: contract.MediaOutput(contract.AudioPart(audio)),
+		},
+		"audioItemMedia": {
+			event: contract.Event{Type: contract.EventItem, Item: contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.AudioPart(audio)}}},
+		},
+		"functionCallItem": {
+			event: contract.Event{Type: contract.EventItem, Item: contract.FunctionCallItem("c1", "fn", `{}`)},
+		},
+		"unsupportedItem": {
+			event:   contract.Event{Type: contract.EventItem, Item: contract.Item{Type: contract.ItemReasoning}},
+			wantErr: true,
+		},
+		"messageImagePart": {
+			event:   contract.Event{Type: contract.EventMessage, Item: contract.MessageItem(contract.RoleAssistant, contract.ImagePart(contract.InlineMedia("image/png", []byte{1})))},
+			wantErr: true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := adapter.ValidateEvent(tc.event)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestAdapterResponseErrors(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	audio := contract.InlineMedia("audio/wav", []byte{1})
+	audio.Format = "wav"
+	audio2 := contract.InlineMedia("audio/wav", []byte{2})
+	audio2.Format = "wav"
+	result := execution.Result{
+		Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio), contract.AudioPart(audio2))},
+		Outcome: contract.Outcome{Status: contract.StatusCompleted},
+	}
+	_, err := adapter.Response(contract.Request{}, result, meta)
+	requireAPIError(t, err, "unsupported", "output")
+}
+
+func TestAdapterResponseAudio(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	audio := contract.InlineMedia("audio/wav", []byte{1, 2, 3})
+	audio.Format = "wav"
+	audio.Ref = "audio_ref"
+	result := execution.Result{
+		Items:   []contract.Item{contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio))},
+		Outcome: contract.Outcome{Status: contract.StatusCompleted},
+	}
+	value, err := adapter.Response(contract.Request{}, result, meta)
+	require.NoError(t, err)
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"audio"`)
+}
+
+func TestParseRequestRejects(t *testing.T) {
+	cases := map[string]string{
+		"invalidMetadata":     `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"metadata":{"k":1}}`,
+		"invalidStream":       `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stream":"yes"}`,
+		"invalidStore":        `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"store":"yes"}`,
+		"invalidParallel":     `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"parallel_tool_calls":"yes"}`,
+		"invalidTopP":         `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"top_p":"bad"}`,
+		"invalidMessagesType": `{"model":"gpt-4","messages":"x"}`,
+		"toolChoiceBadType":   `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":{"type":"custom","name":"x"}}`,
+		"toolChoiceBadFunc":   `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tool_choice":{"type":"function","function":{"name":"x","extra":1}}}`,
+		"audioMissingVoice":   `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"modalities":["text","audio"],"audio":{"format":"wav"}}`,
+		"strictTools":         `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"f","parameters":{},"strict":"yes"}}]}`,
+		"invalidToolCallType": `{"model":"gpt-4","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"custom","function":{"name":"f","arguments":"{}"}}]}]}`,
+		"invalidToolCallArgs": `{"model":"gpt-4","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"not-json"}}]}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest(decodeObject(t, body))
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestWireDelegates(t *testing.T) {
+	media, err := parseMediaURL("https://example.com/a.png", "auto")
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/a.png", media.URL)
+
+	fileObject, err := rawObject(jsontext.Value(`{"file_data":"YQ==","filename":"a.txt"}`), "file")
+	require.NoError(t, err)
+	fileMedia, name, err := parseFileMedia(fileObject, "file")
+	require.NoError(t, err)
+	assert.Equal(t, "a.txt", name)
+	assert.NotEmpty(t, fileMedia.Data)
+
+	assert.Equal(t, "audio/wav", audioMIME("wav"))
+	parts := outputTextParts([]contract.Part{contract.TextPart("x")})
+	require.Len(t, parts, 1)
+	url, err := mediaDataURL(contract.InlineMedia("image/png", []byte{1}))
+	require.NoError(t, err)
+	assert.Contains(t, url, "data:image/png")
+	assert.NotEmpty(t, newID("test_"))
+}
+
+func TestAdapterResponseCombined(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	audio := contract.InlineMedia("audio/wav", []byte{1})
+	audio.Format = "wav"
+	result := execution.Result{
+		Items: []contract.Item{
+			contract.MessageItem(contract.RoleAssistant, contract.TextPart("hello"), contract.AudioPart(audio)),
+			contract.FunctionCallItem("call_1", "search", `{}`),
+		},
+		Outcome: contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}},
+	}
+	value, err := adapter.Response(contract.Request{}, result, meta)
+	require.NoError(t, err)
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"tool_calls"`)
+	assert.Contains(t, string(data), `"usage"`)
+}
+
+func TestAdapterStreamErrors(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	limits := contract.DefaultLimits()
+	rec := httptest.NewRecorder()
+	stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+	require.NoError(t, stream.Event(contract.ToolCallStart("call_1", "search")))
+	err := stream.Event(ToolCallDelta("missing", `{}`))
+	require.Error(t, err)
+	assert.True(t, stream.Started())
+	rec2 := httptest.NewRecorder()
+	stream2 := adapter.Stream(rec2, contract.Request{}, meta, limits)
+	require.NoError(t, stream2.Event(TextDelta("x")))
+	assert.True(t, stream2.Started())
+}
+
+func TestAdapterStreamMore(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	limits := contract.DefaultLimits()
+
+	t.Run("completeToolCall", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		require.NoError(t, stream.Event(contract.ToolCall("call_1", "search", `{"q":"x"}`)))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall}, nil))
+		assert.Contains(t, rec.Body.String(), "search")
+	})
+
+	t.Run("audioStream", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		audio := contract.InlineMedia("audio/wav", []byte{9, 8})
+		audio.Format = "wav"
+		require.NoError(t, stream.Event(contract.MediaOutput(contract.AudioPart(audio))))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+		assert.Contains(t, rec.Body.String(), "audio")
+	})
+
+	t.Run("eventItemMessage", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		require.NoError(t, stream.Event(contract.Event{Type: contract.EventItem, Item: contract.MessageItem(contract.RoleAssistant, contract.TextPart("via item"))}))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+	})
+
+	t.Run("eventItemToolCall", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		require.NoError(t, stream.Event(contract.Event{Type: contract.EventItem, Item: contract.FunctionCallItem("call_1", "search", `{}`)}))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, StopReason: contract.StopToolCall}, nil))
+	})
+
+	t.Run("lengthFinish", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		require.NoError(t, stream.Event(TextDelta("x")))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusIncomplete, StopReason: contract.StopLength}, nil))
+		assert.Equal(t, "length", finishReasonFromStream(t, rec.Body.String()))
+	})
+
+	t.Run("unsupportedEvent", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		err := stream.Event(contract.Event{Type: "nope"})
+		require.Error(t, err)
+	})
+
+	t.Run("reasoningStreamError", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		err := stream.Event(contract.Event{Type: contract.EventReasoning})
+		requireAPIError(t, err, "unsupported", "output")
+	})
+
+	t.Run("badMediaItem", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		err := stream.Event(contract.Event{Type: contract.EventItem, Item: contract.Item{Type: contract.ItemMedia, Content: []contract.Part{}}})
+		requireAPIError(t, err, "unsupported", "output")
+	})
+
+	t.Run("completeUsage", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := contract.Request{Controls: contract.Controls{IncludeUsage: true}}
+		stream := adapter.Stream(rec, req, meta, limits)
+		require.NoError(t, stream.Event(TextDelta("x")))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted, Usage: &contract.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, nil))
+		assert.Contains(t, rec.Body.String(), `"usage"`)
+	})
+
+	t.Run("messageAudio", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		audio := contract.InlineMedia("audio/wav", []byte{1, 2})
+		audio.Format = "wav"
+		item := contract.MessageItem(contract.RoleAssistant, contract.AudioPart(audio))
+		require.NoError(t, stream.Event(contract.Event{Type: contract.EventMessage, Item: item}))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+		assert.Contains(t, rec.Body.String(), `"audio"`)
+	})
+
+	t.Run("mediaItemEvent", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		audio := contract.InlineMedia("audio/wav", []byte{3})
+		audio.Format = "wav"
+		item := contract.Item{Type: contract.ItemMedia, Content: []contract.Part{contract.AudioPart(audio)}}
+		require.NoError(t, stream.Event(contract.Event{Type: contract.EventItem, Item: item}))
+		require.NoError(t, stream.Complete(contract.Outcome{Status: contract.StatusCompleted}, nil))
+	})
+}
+
+func TestSSEWrite(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sw := &sseWriter{w: rec, limits: contract.DefaultLimits()}
+	require.NoError(t, sw.start())
+	require.NoError(t, sw.write("", map[string]any{"ok": true}))
+	require.NoError(t, sw.done())
+	assert.True(t, sw.started)
+}
+
+func TestAdapterStreamFail(t *testing.T) {
+	adapter := Adapter{}
+	meta := responseMeta{ID: "chatcmpl-1", Created: 100, Model: "gpt-4"}
+	limits := contract.DefaultLimits()
+
+	t.Run("beforeStart", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		err := stream.Fail(contract.Invalid("model", "bad model"))
+		requireAPIError(t, err, "invalid_request", "model")
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("afterStart", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		require.NoError(t, stream.Event(TextDelta("x")))
+		require.NoError(t, stream.Fail(errors.New("boom")))
+		assert.Contains(t, rec.Body.String(), "error")
+	})
+
+	t.Run("afterStartWithParam", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stream := adapter.Stream(rec, contract.Request{}, meta, limits)
+		require.NoError(t, stream.Event(TextDelta("x")))
+		require.NoError(t, stream.Fail(contract.Invalid("model", "bad")))
+		assert.Contains(t, rec.Body.String(), `"param":"model"`)
+	})
+}

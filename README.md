@@ -1,1 +1,230 @@
-"# llmux" 
+# llmux
+
+`llmux` is a small, embeddable Go HTTP handler for exposing application-owned
+agent logic through standard AI client protocols. It is a protocol server, not
+an LLM proxy: your `Agent` runs directly in the process and does not need an
+upstream HTTP API.
+
+The root package is the convenient application entry point. The canonical
+contract is also available as `github.com/kelindar/llmux/contract`; protocol
+code and execution machinery are kept under `internal/`.
+
+## Quick start
+
+
+```sh
+go get github.com/kelindar/llmux
+```
+
+
+```go
+agent := llmux.AgentFunc(func(ctx context.Context, req *llmux.Request, emit llmux.Emit) (llmux.Outcome, error) {
+	return llmux.Outcome{}, llmux.EmitText(emit, "hello")
+})
+
+resolver := llmux.ResolverFunc(func(ctx context.Context, target string) (llmux.Agent, llmux.Capabilities, error) {
+	return agent, llmux.Capabilities{}, nil
+})
+
+http.ListenAndServe(":8080", llmux.New(resolver))
+```
+
+Mount `llmux.New(resolver)` in an existing `net/http` server to retain the
+application's authentication middleware and request context. The constructor
+does not open a listener.
+
+`Agent.Run` is called once per accepted request. All output is emitted through
+the ordered, backpressure-aware `Emit` callback; returning from `Run` closes
+emission. `Emit` is serial by contract, and a concurrent call returns
+`llmux.ErrConcurrentEmit`. Agents should stop when `Emit` returns an error.
+
+```go
+type Agent interface {
+	Run(context.Context, *Request, Emit) (Outcome, error)
+}
+
+type Emit func(Event) error
+```
+
+The handler owns protocol indexes, event completion, and response envelopes.
+By default it also assigns response IDs. With `Lifecycle`, the application
+supplies identity and persistence; see below.
+
+## Endpoints
+
+| Endpoint | Protocol | Supported surface |
+| --- | --- | --- |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | Text, image/file/audio input, text/audio output, client function calls, structured output, serial streaming |
+| `POST /v1/responses` | Open Responses with an OpenAI Responses compatibility profile | Text/image/file/function/reasoning input, text/function/reasoning/generated-image output, typed OpenAI-style streaming |
+| `POST /v1/messages` | Anthropic Messages | Text/image/document/file input, tool use/results, Anthropic message streaming |
+| `GET /v1/models` | OpenAI model catalog shape | Enabled when `WithModels` is supplied; an empty list is returned otherwise |
+| `POST /v1/audio/transcriptions` | OpenAI-compatible audio transcription | Enabled only with `WithTranscriber` |
+| `POST /v1/audio/speech` | OpenAI-compatible speech | Enabled only with `WithSpeaker`; binary audio or typed audio SSE |
+
+Unsupported recognized features return a protocol error instead of being
+silently ignored. The Responses route is intentionally a documented subset,
+not a claim of complete OpenAI Responses compatibility. Background execution,
+hosted tools, log probabilities, WebSocket/WebRTC realtime audio, and generic
+Responses audio are rejected.
+
+The supported stream terminators differ by protocol: Chat Completions and
+Responses use `data: [DONE]`; Anthropic uses `message_stop`; speech SSE uses
+`speech.audio.done` and does not append `[DONE]`.
+
+## Capabilities and tools
+
+The resolver returns both an agent and its declarations:
+
+```go
+llmux.Capabilities{
+	InputModalities:  llmux.ModalityText | llmux.ModalityImage,
+	OutputModalities: llmux.ModalityText | llmux.ModalityImage,
+	Tools:            true,
+	ClientTools:      true,
+}
+```
+
+An image-producing Responses agent also sets `ImageGeneration: true`; the
+request must carry the compatibility profile's `image_generation` tool.
+
+The zero capability value means text in/text out with ordinary generation
+controls. Capability checks cover wire support, the selected agent, and
+configured services. `ClientTools` is required before a canonical function
+call can be handed to a client. Tools used internally by an agent never become
+client tool calls automatically.
+
+Continuation is application-owned. Configure `WithContinuationStore` to load
+history for Responses `previous_response_id`. Persistence of new turns is
+owned by `Lifecycle` (`WithLifecycle`), not the continuation store. Chat
+Completions and Anthropic continuation fields are rejected because they have
+no equivalent mapping in this compatibility profile.
+
+## Application-owned response lifecycle
+
+Applications with their own durable execution and response storage can take
+control of response identity, acceptance, and terminal persistence through
+`Lifecycle`:
+
+```go
+type Lifecycle interface {
+	Accept(context.Context, *TurnRequest) (Acceptance, error)
+	Finalize(context.Context, *TurnResult) error
+}
+```
+
+Ordering when a Lifecycle is configured:
+
+1. Validate the request and load continuation history.
+2. `Accept` — reserve identity, reject conflicts, or return an idempotent `Replay`.
+3. `Agent.Run` (skipped on Replay). With `Acceptance.Durable`, disconnect does
+   not cancel execution; use `Acceptance.Context` or the derived non-cancel
+   context.
+4. `Finalize` — exactly once for every accepted execution (success, failure,
+   or cancellation). Not called for Accept errors or completed Replays.
+5. Advertise successful completion only after Finalize succeeds.
+
+Without a Lifecycle, llmux keeps generating response IDs and timestamps
+internally. `store:true` requires a Lifecycle. `store:false` means do not
+retain content for retrieval or continuation; Finalize still runs with
+`Store: false` so bookkeeping can clear. Applications that cannot honor
+`store:false` should reject in Accept.
+
+`Request.Turn` is the input submitted in this HTTP request. `Request.Input` is
+the effective conversation for the agent (loaded history followed by Turn).
+Finalize receives turn-local output so an application can store a parent
+reference plus this turn's input/output instead of rewriting full history.
+
+Mount the handler under an application prefix (`/api/v1/responses` works).
+Use `ResponsesBody` for application-owned GET retrieval so creation, replay,
+and retrieval share one envelope encoder.
+
+Enable Responses-only activity frames with `Acceptance.Activity` and
+`ActivityEvent`; they are disabled by default, never become assistant output,
+and are not translated to Chat or Anthropic.
+
+See [`examples/lifecycle`](examples/lifecycle) for an in-memory Accept /
+continuation / idempotency / retrieval sketch.
+
+## Media and audio
+
+`Media` preserves one of three sources: inline bytes, an HTTP(S) URL, or an
+application-owned asset reference. URL descriptors are never fetched during
+decoding. Supply `WithAssetResolver` when the application wants authorized,
+bounded resolution of URLs or asset references.
+
+The canonical contract keeps MIME type, filename, format, and bytes separate.
+It does not describe images or transcribe audio. Native mappings are explicit:
+
+- Chat Completions accepts image/file/audio input and audio output.
+- Responses accepts image/file input and generated-image output represented as
+  `image_generation_call` only when the request includes the explicitly
+  supported `{"type":"image_generation"}` tool and the resolver declares
+  `ImageGeneration: true`; it does not invent a generic audio item.
+- Anthropic accepts image/document/file input but has no audio mapping in this
+  library.
+- Transcription uses bounded multipart input and `json`, `text`, or
+  `verbose_json` output.
+- Speech uses JSON input and binary output, or typed
+  `speech.audio.delta`/`speech.audio.done` SSE.
+
+The public audio contracts are in `github.com/kelindar/llmux/audio`, with root
+aliases for convenience. See [`examples/multimodal`](examples/multimodal) for
+a deterministic media-aware agent.
+
+## Limits and errors
+
+Zero-valued `Limits` use these defaults:
+
+- request JSON: 8 MiB
+- each inline media value: 16 MiB
+- resolved assets per request: 32
+- accumulated agent output: 8 MiB
+- one SSE event: 1 MiB
+- multipart request: 32 MiB
+
+Set limits with `WithLimits`. Requests are bounded before decoding, output is
+bounded while events are accumulated, and cancellation propagates through the
+agent and asset resolver. Client errors are sanitized; `WithErrorLog` can
+observe operational failures without putting raw backend errors in responses.
+
+Streaming validates the request and capabilities before committing headers.
+Failures before the first event are ordinary protocol error responses. After
+headers are committed, codecs emit their protocol-specific stream error and
+terminal lifecycle event rather than appending a JSON body.
+
+## Examples, fixtures, and tests
+
+```sh
+go run ./examples/basic
+go run ./examples/multimodal
+go run ./examples/lifecycle
+go run ./bench
+```
+
+The repository includes JSON fixtures, fuzz targets for all three decoders,
+and smoke tests using the official OpenAI and Anthropic Go SDKs against local
+`httptest` servers. No credentials or network service are required for the
+default test suite.
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+`bench/main.go` uses `github.com/kelindar/bench` to measure wire decoding,
+canonical execution, every conversational protocol in both modes, both audio
+routes, and the model catalog path.
+
+## Reference provenance
+
+Protocol behavior was checked against the Open Responses specification and
+reference, OpenAI's current Chat Completions/Responses/audio documentation,
+and Anthropic's current Messages/streaming documentation on 2026-09-10.
+The official SDK smoke tests use the versions in `go.mod`.
+
+`go-llm-proxy-master` and `go-chatmock` were used as conceptual reference
+material only. No source was copied into llmux and llmux does not inherit an
+upstream HTTP proxy, provider routing, load balancer, admin UI, or persistence
+dependency. See [`REFERENCE.md`](REFERENCE.md) for the source commit and
+license notes.

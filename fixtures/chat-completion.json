@@ -1,0 +1,6 @@
+{
+  "model": "agent/basic",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "model": "agent/basic",
+  "max_tokens": 128,
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}

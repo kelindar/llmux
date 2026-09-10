@@ -1,0 +1,54 @@
+# Binaries
+/noeti
+*.exe
+*.dll
+*.so
+*.dylib
+.*/
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+
+# Go build and test artifacts
+*.test
+*.out
+*.gob
+*.profile
+coverage*
+*.coverprofile
+/coverage/
+cov
+cover
+chat_cov
+merged
+/a
+/ar
+/r
+/resp
+/root
+
+
+# Dependency directories
+/**/dist/
+/**/vendor/
+/**/node_modules/
+/**/plans/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
