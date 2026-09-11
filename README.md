@@ -1,13 +1,11 @@
 <p align="center">
     <img width="300" height="100" src=".github/logo.png" border="0" alt="kelindar/roaring">
     <br>
-    <img src="https://img.shields.io/github/go-mod/go-version/kelindar/storage" alt="Go Version">
-    <a href="https://pkg.go.dev/github.com/kelindar/storage"><img src="https://pkg.go.dev/badge/github.com/kelindar/storage" alt="PkgGoDev"></a>
+    <img src="https://img.shields.io/github/go-mod/go-version/kelindar/llmux" alt="Go Version">
+    <a href="https://pkg.go.dev/github.com/kelindar/llmux"><img src="https://pkg.go.dev/badge/github.com/kelindar/llmux" alt="PkgGoDev"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-    <a href="https://coveralls.io/github/kelindar/storage"><img src="https://coveralls.io/repos/github/kelindar/storage/badge.svg" alt="Coverage"></a>
+    <a href="https://coveralls.io/github/kelindar/llmux"><img src="https://coveralls.io/repos/github/kelindar/llmux/badge.svg" alt="Coverage"></a>
 </p>
-
-# llmux
 
 `llmux` is a small, embeddable Go HTTP handler for exposing application-owned
 agent logic through standard AI client protocols. It is a protocol server, not
