@@ -30,8 +30,8 @@ agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.E
 	return chat.Outcome{}, emit.Text("hello")
 })
 
-resolver := chat.Resolver(func(ctx context.Context, target string) (chat.Agent, chat.Capabilities, error) {
-	return agent, chat.Capabilities{}, nil
+resolver := chat.Resolver(func(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
+	return agent, chat.Info{}, nil
 })
 
 mux := http.NewServeMux()
@@ -84,6 +84,7 @@ The handler matches exact paths. Mount it under a prefix with
 | `GET /models` | OpenAI model catalog shape | Enabled when `WithModels` is supplied; an empty list is returned otherwise |
 | `POST /audio/transcriptions` | OpenAI-compatible audio transcription | Enabled only with `WithTranscriber` |
 | `POST /audio/speech` | OpenAI-compatible speech | Enabled only with `WithSpeaker`; binary audio or typed audio SSE |
+| `POST /mcp` | MCP stateless Streamable HTTP | Enabled only with `WithMCP`; see "MCP endpoint" below |
 
 Typical mount for OpenAI-compatible clients:
 
@@ -101,27 +102,30 @@ The supported stream terminators differ by protocol: Chat Completions and
 Responses use `data: [DONE]`; Anthropic uses `message_stop`; speech SSE uses
 `speech.audio.done` and does not append `[DONE]`.
 
-## Capabilities and tools
+## Info and tools
 
 The resolver returns both an agent and its declarations:
 
 ```go
-chat.Capabilities{
+chat.Info{
 	InputModalities:  chat.ModalityText | chat.ModalityImage,
 	OutputModalities: chat.ModalityText | chat.ModalityImage,
 	Tools:            true,
 	ClientTools:      true,
+	Description:      "Draws charts from tabular input.",
 }
 ```
 
 An image-producing Responses agent also sets `ImageGeneration: true`; the
 request must carry the compatibility profile's `image_generation` tool.
 
-The zero capability value means text in/text out with ordinary generation
-controls. Capability checks cover wire support, the selected agent, and
-configured services. `ClientTools` is required before a canonical function
-call can be handed to a client. Tools used internally by an agent never become
-client tool calls automatically.
+The zero Info value means text in/text out with ordinary generation
+controls. `Description` is a human-readable summary that llmux surfaces as
+the MCP tool description when the agent is exposed through `/mcp`; it does
+not affect the chat endpoints. Info checks cover wire support, the selected
+agent, and configured services. `ClientTools` is required before a canonical
+function call can be handed to a client. Tools used internally by an agent
+never become client tool calls automatically.
 
 Continuation is application-owned. Configure `WithContinuationStore` to load
 history for Responses `previous_response_id`. Persistence of new turns is
@@ -213,6 +217,114 @@ idempotency, continuation, retrieval, and `RunTimeout` durable execution.
 Cleanup after cancellation starts inside Finish via
 `context.WithTimeout(context.WithoutCancel(ctx), …)`.
 
+## MCP endpoint
+
+`WithMCP` opt-in exposes application-owned agents as MCP tools at the exact
+path `/mcp`, serving protocol revision **2026-07-28** over **stateless
+Streamable HTTP** (official Go SDK `github.com/modelcontextprotocol/go-sdk`,
+version in `go.mod`). Chat-only applications need no MCP configuration, and
+the endpoint is disabled unless explicitly configured. Applications own any
+prefix mounting, exactly as for the chat endpoints.
+
+Supported methods:
+
+- `server/discover` — handled by the SDK; advertises the 2026-07-28 revision,
+  server identity, and capabilities.
+- `tools/list` — the caller-specific catalog from the listing callback.
+- `tools/call` — invocation of a listed tool through the shared execution
+  path.
+
+`Transport` notes: no session storage and no sticky sessions —
+`Mcp-Session-Id` is neither read nor issued, `GET`/`DELETE` return 405, and
+tool results are returned as one `application/json` body. Requests
+identifying older revisions are rejected; legacy `initialize` handshakes
+cannot proceed against this endpoint.
+
+```go
+handler := llmux.New(resolver,
+	llmux.WithMCP(llmux.MCPConfig{
+		List: func(ctx context.Context) ([]llmux.MCPEntry, error) {
+			// ctx carries the application's authentication. Return the
+			// entries this caller may see and invoke.
+			return []llmux.MCPEntry{
+				{Tool: "echo", Target: "agent/echo", Info: info},
+			}, nil
+		},
+	}),
+)
+```
+
+Each entry binds a stable MCP tool name to a Resolver target and reuses
+`chat.Info`; `Info.Description` becomes the tool description. Tool names must
+be 1–128 characters from `[A-Za-z0-9._-]`, are never derived from targets by
+sanitization, and must be unique — duplicates are rejected (logged, HTTP 500),
+never silently overwritten. Listings are returned in sorted name order and
+every cacheable result (`server/discover`, `tools/list`) is marked
+`cacheScope: "private"` with a zero TTL so caller-specific catalogs cannot
+leak across identities.
+
+Fixed tool input: every agent tool accepts exactly one JSON object argument,
+validated strictly against an internal schema (the schema is not
+configurable, and no JSON-to-prompt conversion exists):
+
+```json
+{
+	"type": "object",
+	"properties": { "message": { "type": "string" } },
+	"required": ["message"],
+	"additionalProperties": false
+}
+```
+
+The message becomes one canonical user-message item, and the invocation runs
+through the same machinery as the chat endpoints: authenticated context,
+Resolver authorization, Info validation, request/output limits, cancellation
+and bounded durable execution (`Acceptance.RunTimeout`), Lifecycle
+acceptance, exactly-once `Finish`, and persistence before a successful tool
+result. Replays returned by the application Lifecycle skip execution and map
+the stored response like any other. JSON-RPC request IDs are never treated
+as idempotency keys; MCP requests carry no `Idempotency-Key`, so replay
+behavior is owned entirely by the application Lifecycle. A listed tool is
+not an authorization grant: invocation independently resolves and executes
+the target.
+
+Output mapping (completed tool results; ordering preserved):
+
+| Agent output | MCP result |
+| --- | --- |
+| Assistant text (message/media items, streamed or complete) | `TextContent`, in emission order |
+| Image, audio, or file output | Rejected explicitly as a tool error (execution already rejects non-text modalities for MCP requests) |
+| Internal agent function calls | Rejected explicitly; never surfaced as client tool requests |
+| Reasoning summaries, activity events | Rejected explicitly (not enabled/mappable for MCP requests) |
+| Truncated output (`incomplete`) | Partial text plus an explicit incompleteness notice, `IsError: true` |
+| Execution failures, cancellations, Finish failures | Tool-execution errors (`IsError: true`) with sanitized messages; raw operational errors go to `WithErrorLog` |
+
+Malformed requests — unknown tools, invalid arguments, oversized inputs — are
+protocol-level JSON-RPC errors (`-32602`), not tool results. Tasks, sampling,
+elicitation, approval-resumption flows, and streaming tool results are not
+implemented or advertised in this version.
+
+### OAuth responsibilities of the host
+
+llmux implements no OAuth server, token store, or token-validation policy.
+Stateless MCP is designed to sit behind the host application's middleware:
+
+- Wrap `/mcp` (or the mounted prefix) with authentication middleware; llmux
+  preserves request context through listing, resolution, acceptance,
+  execution, and Finish, and preserves application-generated `401` responses
+  and `WWW-Authenticate` challenges.
+- The host owns token audience/resource validation, scope enforcement,
+  authorization-server discovery, and RFC 9728 protected-resource metadata
+  routes. Do not add permissive CORS; the transport's Origin/dns-rebinding
+  validation stays enabled.
+- Listing and invocation each perform their own authorization checks under
+  the same authenticated identity.
+
+See [`examples/mcp`](examples/mcp) for an agent, resolver with
+`Info.Description`, authenticated listing, MCP configuration, prefix
+mounting, and an illustrative (deliberately not production) authentication
+wrapper.
+
 ## Media and audio
 
 `Media` preserves one of three sources: inline bytes, an HTTP(S) URL, or an
@@ -267,6 +379,7 @@ go run ./examples/basic
 go run ./examples/multimodal
 go run ./examples/lifecycle
 go run ./examples/lifecycle-full
+go run ./examples/mcp
 go run ./bench
 ```
 
@@ -289,8 +402,10 @@ routes, and the model catalog path.
 
 Protocol behavior was checked against the Open Responses specification and
 reference, OpenAI's current Chat Completions/Responses/audio documentation,
-and Anthropic's current Messages/streaming documentation on 2026-09-10.
-The official SDK smoke tests use the versions in `go.mod`.
+and Anthropic's current Messages/streaming documentation on 2026-09-10. MCP
+behavior was checked against the MCP 2026-07-28 specification and the
+official Go SDK documentation on 2026-09-11. The official SDK smoke tests
+use the versions in `go.mod`.
 
 `go-llm-proxy-master` and `go-chatmock` were used as conceptual reference
 material only. No source was copied into llmux and llmux does not inherit an

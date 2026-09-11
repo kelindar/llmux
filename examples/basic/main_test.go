@@ -17,8 +17,8 @@ func TestHandlerBuild(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("received " + req.Input[0].Content[0].Text))
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{}, nil
 	})
 	handler := llmux.New(resolver)
 

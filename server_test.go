@@ -22,6 +22,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
 	internalexecution "github.com/kelindar/llmux/internal/execution"
+	internalprotocol "github.com/kelindar/llmux/internal/protocol"
 	"github.com/openai/openai-go/v3"
 	openaioption "github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
@@ -38,7 +39,7 @@ func TestChatText(t *testing.T) {
 		require.Len(t, req.Input, 1)
 		return chat.Outcome{Usage: &chat.Usage{Input: 3, Output: 2, Total: 5}}, emit(chat.Text("hello"))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{}), "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	body := decodeResponse(t, recorder)
 	assert.Equal(t, "chat.completion", body["object"])
@@ -58,7 +59,7 @@ func TestResponsesText(t *testing.T) {
 		}
 		return chat.Outcome{}, nil
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/responses", `{"model":"agent/basic","input":"hi"}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{}), "/responses", `{"model":"agent/basic","input":"hi"}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	body := decodeResponse(t, recorder)
 	assert.Equal(t, "response", body["object"])
@@ -73,7 +74,7 @@ func TestAnthropicText(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("hello"))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/messages", `{"model":"agent/basic","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`, map[string]string{"anthropic-version": "2023-06-01"})
+	recorder := postJSON(t, testHandler(agent, chat.Info{}), "/messages", `{"model":"agent/basic","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`, map[string]string{"anthropic-version": "2023-06-01"})
 	require.Equal(t, http.StatusOK, recorder.Code)
 	body := decodeResponse(t, recorder)
 	assert.Equal(t, "message", body["type"])
@@ -104,7 +105,7 @@ func TestStreamText(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), test.path, test.body, test.headers)
+			recorder := postJSON(t, testHandler(agent, chat.Info{}), test.path, test.body, test.headers)
 			require.Equal(t, http.StatusOK, recorder.Code)
 			require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
 			records := readSSE(t, recorder.Result().Body)
@@ -164,7 +165,7 @@ func TestToolStream(t *testing.T) {
 		}
 		return chat.Outcome{StopReason: chat.StopToolCall}, emit(chat.ToolDone("call_1"))
 	})
-	caps := chat.Capabilities{Tools: true, ClientTools: true}
+	caps := chat.Info{Tools: true, ClientTools: true}
 	body := `{"model":"agent/basic","stream":true,"messages":[{"role":"user","content":"find"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`
 	recorder := postJSON(t, testHandler(agent, caps), "/chat/completions", body, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -238,7 +239,7 @@ func TestToolCallAdapters(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			recorder := postJSON(t, testHandler(agent, chat.Capabilities{Tools: true, ClientTools: true}), test.path, test.body, test.headers)
+			recorder := postJSON(t, testHandler(agent, chat.Info{Tools: true, ClientTools: true}), test.path, test.body, test.headers)
 			require.Equal(t, http.StatusOK, recorder.Code)
 			body := decodeResponse(t, recorder)
 			switch test.name {
@@ -263,7 +264,7 @@ func TestImageOutput(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.MediaItem(chat.ImagePart(chat.InlineMedia("image/png", []byte{1, 2, 3}))))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{OutputModalities: chat.ModalityText | chat.ModalityImage, ImageGeneration: true}), "/responses", `{"model":"agent/image","tools":[{"type":"image_generation"}],"input":"draw"}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{OutputModalities: chat.ModalityText | chat.ModalityImage, ImageGeneration: true}), "/responses", `{"model":"agent/image","tools":[{"type":"image_generation"}],"input":"draw"}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	body := decodeResponse(t, recorder)
 	output := body["output"].([]any)[0].(map[string]any)
@@ -277,7 +278,7 @@ func TestAudioOutput(t *testing.T) {
 		media.Format = "wav"
 		return chat.Outcome{}, emit(chat.MediaItem(chat.AudioPart(media)))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{OutputModalities: chat.ModalityText | chat.ModalityAudio}), "/chat/completions", `{"model":"agent/audio","modalities":["audio"],"audio":{"voice":"alloy","format":"wav"},"messages":[{"role":"user","content":"speak"}]}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{OutputModalities: chat.ModalityText | chat.ModalityAudio}), "/chat/completions", `{"model":"agent/audio","modalities":["audio"],"audio":{"voice":"alloy","format":"wav"},"messages":[{"role":"user","content":"speak"}]}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	body := decodeResponse(t, recorder)
 	message := body["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
@@ -293,7 +294,7 @@ func TestMediaInput(t *testing.T) {
 	})
 	data := "AQID"
 	body := `{"model":"agent/vision","messages":[{"role":"user","content":[{"type":"text","text":"what?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,` + data + `"}}]}]}`
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityImage}), "/chat/completions", body, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{InputModalities: chat.ModalityText | chat.ModalityImage}), "/chat/completions", body, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Len(t, got.Content, 2)
 	assert.Equal(t, chat.PartImage, got.Content[1].Type)
@@ -308,7 +309,7 @@ func TestFileDataURL(t *testing.T) {
 		return chat.Outcome{}, emit(chat.Text("seen"))
 	})
 	body := `{"model":"agent/file","messages":[{"role":"user","content":[{"type":"file","file":{"filename":"sample.pdf","file_data":"data:application/pdf;base64,AQID"}}]}]}`
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityFile}), "/chat/completions", body, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{InputModalities: chat.ModalityText | chat.ModalityFile}), "/chat/completions", body, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Equal(t, chat.PartFile, got.Type)
 	require.NotNil(t, got.Media)
@@ -321,7 +322,7 @@ func TestParallelRequests(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text(req.Input[0].Content[0].Text))
 	})
-	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Capabilities{})))
+	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Info{})))
 	defer server.Close()
 	type responseResult struct {
 		value string
@@ -383,7 +384,7 @@ func TestOutputLimit(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("too long"))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}, WithLimits(chat.Limits{MaxOutputBytes: 3})), "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{}, WithLimits(chat.Limits{MaxOutputBytes: 3})), "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	assert.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code)
 	assert.Equal(t, "output_too_large", responseError(t, recorder)["code"])
 }
@@ -393,8 +394,8 @@ type sseRecord struct {
 	Data  string
 }
 
-func testHandler(agent chat.Agent, caps chat.Capabilities, options ...Option) *Handler {
-	resolver := chat.Resolver(func(_ context.Context, target string) (chat.Agent, chat.Capabilities, error) {
+func testHandler(agent chat.Agent, caps chat.Info, options ...Option) *Handler {
+	resolver := chat.Resolver(func(_ context.Context, target string) (chat.Agent, chat.Info, error) {
 		return agent, caps, nil
 	})
 	return New(resolver, options...)
@@ -472,7 +473,7 @@ func TestOpenAI(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("hello"))
 	})
-	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Capabilities{})))
+	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Info{})))
 	defer server.Close()
 	client := openai.NewClient(
 		openaioption.WithAPIKey("test"),
@@ -507,7 +508,7 @@ func TestOpenAIStream(t *testing.T) {
 		}
 		return chat.Outcome{}, emit(chat.TextDelta("lo"))
 	})
-	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Capabilities{})))
+	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Info{})))
 	defer server.Close()
 	client := openai.NewClient(openaioption.WithAPIKey("test"), openaioption.WithBaseURL(server.URL+"/v1/"), openaioption.WithMaxRetries(0))
 	ctx := context.Background()
@@ -544,7 +545,7 @@ func TestAnthropic(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("hello"))
 	})
-	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Capabilities{})))
+	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Info{})))
 	defer server.Close()
 	client := anthropic.NewClient(
 		anthropicoption.WithoutEnvironmentDefaults(),
@@ -571,7 +572,7 @@ func TestAnthropicStream(t *testing.T) {
 		}
 		return chat.Outcome{}, emit(chat.TextDelta("lo"))
 	})
-	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Capabilities{})))
+	server := httptest.NewServer(http.StripPrefix("/v1", testHandler(agent, chat.Info{})))
 	defer server.Close()
 	client := anthropic.NewClient(
 		anthropicoption.WithoutEnvironmentDefaults(),
@@ -597,10 +598,10 @@ func TestAnthropicStream(t *testing.T) {
 
 func TestOpenAIAudio(t *testing.T) {
 	server := httptest.NewServer(http.StripPrefix("/v1", New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 			return chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 				return chat.Outcome{}, emit(chat.Text("unused"))
-			}), chat.Capabilities{}, nil
+			}), chat.Info{}, nil
 		}),
 		WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
 			assert.Equal(t, "gpt-4o-transcribe", req.Model)
@@ -637,10 +638,10 @@ func TestOpenAIAudio(t *testing.T) {
 }
 
 func TestModelsList(t *testing.T) {
-	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
+	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{}, nil
+		}), chat.Info{}, nil
 	}), WithModels(
 		chat.Model{ID: "agent/basic", OwnedBy: "test"},
 		chat.Model{ID: "agent/other"},
@@ -666,7 +667,7 @@ func TestModelsList(t *testing.T) {
 func TestMethodNotAllowed(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	paths := []string{
 		"/chat/completions", "/responses", "/messages",
 		"/audio/transcriptions", "/audio/speech", "/models",
@@ -690,7 +691,7 @@ func TestMethodNotAllowed(t *testing.T) {
 func TestRouteNotFound(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
@@ -706,8 +707,8 @@ func TestResolveErrors(t *testing.T) {
 
 	t.Run("resolver error", func(t *testing.T) {
 		var logged error
-		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-			return nil, chat.Capabilities{}, errors.New("lookup failed")
+		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+			return nil, chat.Info{}, errors.New("lookup failed")
 		}), WithErrorLog(func(_ context.Context, err error) { logged = err }))
 		recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 		require.Equal(t, http.StatusInternalServerError, recorder.Code)
@@ -715,8 +716,8 @@ func TestResolveErrors(t *testing.T) {
 	})
 
 	t.Run("nil agent", func(t *testing.T) {
-		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-			return nil, chat.Capabilities{}, nil
+		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+			return nil, chat.Info{}, nil
 		}))
 		recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 		require.Equal(t, http.StatusInternalServerError, recorder.Code)
@@ -729,7 +730,7 @@ func TestAssetResolution(t *testing.T) {
 		resolved = req.Input[0].Content[0].Media.MIMEType
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	handler := testHandler(agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityFile},
+	handler := testHandler(agent, chat.Info{InputModalities: chat.ModalityText | chat.ModalityFile},
 		WithAssetResolver(chat.AssetResolver(func(_ context.Context, media chat.Media, _ int64) (chat.Media, error) {
 			assert.Equal(t, "file-abc", media.Ref)
 			return chat.InlineMedia("application/pdf", []byte{9}), nil
@@ -744,7 +745,7 @@ func TestAssetResolution(t *testing.T) {
 func TestAssetResolutionFailure(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityFile},
+	}), chat.Info{InputModalities: chat.ModalityText | chat.ModalityFile},
 		WithAssetResolver(chat.AssetResolver(func(context.Context, chat.Media, int64) (chat.Media, error) {
 			return chat.Media{}, errors.New("missing asset")
 		})),
@@ -759,25 +760,25 @@ func TestCapabilityRejects(t *testing.T) {
 	agent := chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("unreachable")
 	})
-	baseCaps := chat.Capabilities{
+	baseCaps := chat.Info{
 		InputModalities:    chat.ModalityText,
 		OutputModalities:   chat.ModalityText,
 		GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop,
 	}
 	cases := []struct {
 		name string
-		caps chat.Capabilities
+		caps chat.Info
 		body string
 		code string
 	}{
-		{name: "temperature", caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTopP | chat.ControlStop}, body: `{"model":"agent/basic","temperature":0.5,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
-		{name: "top_p", caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlStop}, body: `{"model":"agent/basic","top_p":0.5,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
-		{name: "stop", caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP}, body: `{"model":"agent/basic","stop":["END"],"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
+		{name: "temperature", caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTopP | chat.ControlStop}, body: `{"model":"agent/basic","temperature":0.5,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
+		{name: "top_p", caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlStop}, body: `{"model":"agent/basic","top_p":0.5,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
+		{name: "stop", caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP}, body: `{"model":"agent/basic","stop":["END"],"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
 		{name: "parallel tools", caps: baseCaps, body: `{"model":"agent/basic","parallel_tool_calls":false,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
 		{name: "image input", caps: baseCaps, body: `{"model":"agent/basic","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`, code: "unsupported"},
 		{name: "tools", caps: baseCaps, body: `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`, code: "unsupported"},
 		{name: "structured output", caps: baseCaps, body: `{"model":"agent/basic","response_format":{"type":"json_schema","json_schema":{"name":"out","schema":{"type":"object"}}},"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
-		{name: "max tokens", caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}, body: `{"model":"agent/basic","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
+		{name: "max tokens", caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}, body: `{"model":"agent/basic","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
 		{name: "reasoning", caps: baseCaps, body: `{"model":"agent/basic","reasoning_effort":"medium","messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
 		{name: "extension", caps: baseCaps, body: `{"model":"agent/basic","x-vendor-trace":{"enabled":true},"messages":[{"role":"user","content":"hi"}]}`, code: "unsupported"},
 	}
@@ -793,9 +794,9 @@ func TestCapabilityRejects(t *testing.T) {
 func TestValidateRequestDirect(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	parsed := parsedRequest{Request: chat.Request{Target: "agent/basic", Output: chat.OutputSpec{Modalities: chat.ModalityText | chat.ModalityAudio}}}
-	err := handler.validateParsed(&parsed, chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText})
+	err := handler.validateParsed(&parsed, chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText})
 	require.Error(t, err)
 	assert.Equal(t, "unsupported", err.(*chat.Error).Code)
 }
@@ -804,16 +805,16 @@ func TestOutputEvent(t *testing.T) {
 	cases := []struct {
 		name  string
 		event chat.Event
-		caps  chat.Capabilities
+		caps  chat.Info
 	}{
-		{name: "file output", event: chat.MediaItem(chat.FilePart(chat.InlineMedia("application/pdf", []byte{1}))), caps: chat.Capabilities{OutputModalities: chat.ModalityText}},
-		{name: "audio output", event: chat.MediaItem(chat.AudioPart(chat.InlineMedia("audio/wav", []byte{1}))), caps: chat.Capabilities{OutputModalities: chat.ModalityText}},
-		{name: "tool call", event: chat.Tool("call_1", "lookup", `{}`), caps: chat.Capabilities{OutputModalities: chat.ModalityText, Tools: true}},
-		{name: "reasoning", event: chat.Reasoning("brief"), caps: chat.Capabilities{OutputModalities: chat.ModalityText}},
+		{name: "file output", event: chat.MediaItem(chat.FilePart(chat.InlineMedia("application/pdf", []byte{1}))), caps: chat.Info{OutputModalities: chat.ModalityText}},
+		{name: "audio output", event: chat.MediaItem(chat.AudioPart(chat.InlineMedia("audio/wav", []byte{1}))), caps: chat.Info{OutputModalities: chat.ModalityText}},
+		{name: "tool call", event: chat.Tool("call_1", "lookup", `{}`), caps: chat.Info{OutputModalities: chat.ModalityText, Tools: true}},
+		{name: "reasoning", event: chat.Reasoning("brief"), caps: chat.Info{OutputModalities: chat.ModalityText}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateOutputEvent(test.event, test.caps)
+			err := internalprotocol.ValidateOutputEvent(test.event, test.caps)
 			require.Error(t, err)
 		})
 	}
@@ -856,7 +857,7 @@ func TestDecodeHelpers(t *testing.T) {
 func TestContinuationMissingStore(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{Continuation: true}, WithContinuationStore(&testContinuationStore{items: make(map[string][]chat.Item)}))
+	}), chat.Info{Continuation: true}, WithContinuationStore(&testContinuationStore{items: make(map[string][]chat.Item)}))
 	recorder := postJSON(t, handler, "/responses", `{"model":"agent/basic","previous_response_id":"resp_missing","input":"hi"}`, nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
@@ -864,7 +865,7 @@ func TestContinuationMissingStore(t *testing.T) {
 func TestStoreWithoutContinuation(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{Continuation: true})
+	}), chat.Info{Continuation: true})
 	recorder := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"hi"}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
@@ -873,7 +874,7 @@ func TestStoreWithoutContinuation(t *testing.T) {
 func TestAgentRunError(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("agent failed")
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusInternalServerError, recorder.Code)
 }
@@ -881,7 +882,7 @@ func TestAgentRunError(t *testing.T) {
 func TestValidateRequest(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	maxTokens := 16
 	temperature := 0.5
 	parallel := false
@@ -889,20 +890,20 @@ func TestValidateRequest(t *testing.T) {
 	cases := []struct {
 		name   string
 		parsed parsedRequest
-		caps   chat.Capabilities
+		caps   chat.Info
 	}{
-		{name: "empty model", parsed: parsedRequest{Request: chat.Request{Target: " ", Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
+		{name: "empty model", parsed: parsedRequest{Request: chat.Request{Target: " ", Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
 		{name: "audio input", parsed: func() parsedRequest {
 			media := chat.InlineMedia("audio/wav", []byte{1})
 			media.Format = "wav"
 			return parsedRequest{Request: chat.Request{Target: "agent", Input: []chat.Item{chat.MessageItem(chat.RoleUser, chat.AudioPart(media))}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}
-		}(), caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
-		{name: "max output tokens", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{MaxOutputTokens: &maxTokens}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
-		{name: "parallel tools", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{ParallelToolCall: &parallel}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
-		{name: "store without continuation", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, Store: &store}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, Continuation: false}},
-		{name: "image generation", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{ImageGeneration: true}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
-		{name: "reasoning summary", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{Reasoning: &chat.ReasoningControl{Summary: true}}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop | chat.ControlReasoning}},
-		{name: "temperature chat.Unsupported", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{Temperature: &temperature}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Capabilities{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTopP | chat.ControlStop}},
+		}(), caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
+		{name: "max output tokens", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{MaxOutputTokens: &maxTokens}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
+		{name: "parallel tools", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{ParallelToolCall: &parallel}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop}},
+		{name: "store without continuation", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}, Store: &store}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, Continuation: false}},
+		{name: "image generation", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{ImageGeneration: true}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}},
+		{name: "reasoning summary", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{Reasoning: &chat.ReasoningControl{Summary: true}}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTemperature | chat.ControlTopP | chat.ControlStop | chat.ControlReasoning}},
+		{name: "temperature chat.Unsupported", parsed: parsedRequest{Request: chat.Request{Target: "agent", Controls: chat.Controls{Temperature: &temperature}, Output: chat.OutputSpec{Modalities: chat.ModalityText}}}, caps: chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText, GenerationControls: chat.ControlMaxOutputTokens | chat.ControlTopP | chat.ControlStop}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -915,7 +916,7 @@ func TestValidateRequest(t *testing.T) {
 func TestResolveItemOutput(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityFile},
+	}), chat.Info{InputModalities: chat.ModalityText | chat.ModalityFile},
 		WithAssetResolver(chat.AssetResolver(func(_ context.Context, _ chat.Media, _ int64) (chat.Media, error) {
 			return chat.InlineMedia("application/pdf", []byte{1}), nil
 		})),
@@ -928,6 +929,6 @@ func TestResolveItemOutput(t *testing.T) {
 }
 
 func TestReasoningSummaryGate(t *testing.T) {
-	assert.True(t, requiresReasoningSummary(chat.Reasoning("brief")))
-	assert.True(t, requiresReasoningSummary(chat.OutputItem(chat.Item{Type: chat.ItemReasoning, Summary: []chat.Part{chat.SummaryPart("brief")}})))
+	assert.True(t, internalprotocol.RequiresReasoningSummary(chat.Reasoning("brief")))
+	assert.True(t, internalprotocol.RequiresReasoningSummary(chat.OutputItem(chat.Item{Type: chat.ItemReasoning, Summary: []chat.Part{chat.SummaryPart("brief")}})))
 }

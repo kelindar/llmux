@@ -19,8 +19,8 @@ func main() {
 		}
 		return chat.Outcome{}, emit.Text("no image")
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{InputModalities: chat.ModalityText | chat.ModalityImage}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{InputModalities: chat.ModalityText | chat.ModalityImage}, nil
 	})
 
 	mux := http.NewServeMux()

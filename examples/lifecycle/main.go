@@ -19,8 +19,8 @@ func main() {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit.Text("hello")
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{Continuation: true}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{Continuation: true}, nil
 	})
 
 	mux := http.NewServeMux()

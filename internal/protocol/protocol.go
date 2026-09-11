@@ -4,10 +4,13 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"time"
 
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
+	"github.com/rs/xid"
 )
 
 // Kind identifies one of the wire protocols served by the handler.
@@ -207,4 +210,146 @@ func WriteJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(append(data, '\n'))
+}
+
+// InitialResponse assembles the initial response envelope shared by every
+// creation path, applying library defaults for identity and echoing the
+// retrieval fields from the parsed request.
+func InitialResponse(seed chat.Response, parsed *ParsedRequest) chat.Response {
+	resp := seed
+	if resp.ID == "" {
+		resp.ID = xid.New().String()
+	}
+	if resp.Created == 0 {
+		resp.Created = time.Now().Unix()
+	}
+	if len(resp.Metadata) == 0 {
+		resp.Metadata = cloneMetadata(parsed.Metadata)
+	} else {
+		resp.Metadata = cloneMetadata(resp.Metadata)
+	}
+	resp.Store = parsed.Retain
+	resp.Target = parsed.Request.Target
+	resp.Instructions = parsed.Request.Instructions
+	if parsed.Previous != nil {
+		p := *parsed.Previous
+		resp.Previous = &p
+	}
+	return resp
+}
+
+func cloneMetadata(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	return maps.Clone(src)
+}
+
+func RequiresReasoningSummary(event chat.Event) bool {
+	return event.Type == chat.EventItem && event.Item.Type == chat.ItemReasoning
+}
+
+// ValidateOutputEvent checks an agent output event against what the selected
+// agent declares it can provide.
+func ValidateOutputEvent(event chat.Event, info chat.Info) error {
+	info = info.Normalize()
+	checkPart := func(part chat.Part) error {
+		switch {
+		case part.Type == chat.PartText && !info.OutputModalities.Has(chat.ModalityText):
+			return chat.Unsupported("output", "selected agent does not provide text output")
+		case part.Type == chat.PartImage && !info.OutputModalities.Has(chat.ModalityImage):
+			return chat.Unsupported("output", "selected agent does not provide image output")
+		case part.Type == chat.PartAudio && !info.OutputModalities.Has(chat.ModalityAudio):
+			return chat.Unsupported("output", "selected agent does not provide audio output")
+		case part.Type == chat.PartFile && !info.OutputModalities.Has(chat.ModalityFile):
+			return chat.Unsupported("output", "selected agent does not provide file output")
+		}
+		return nil
+	}
+	checkItem := func(item chat.Item) error {
+		switch item.Type {
+		case chat.ItemMessage, chat.ItemMedia:
+			for _, part := range item.Content {
+				if err := checkPart(part); err != nil {
+					return err
+				}
+			}
+		case chat.ItemFunctionCall:
+			if !info.ClientTools {
+				return chat.Unsupported("tools", "selected agent does not hand tool calls to the client")
+			}
+		case chat.ItemFunctionCallOutput:
+			for _, part := range item.Output {
+				if err := checkPart(part); err != nil {
+					return err
+				}
+			}
+		case chat.ItemReasoning:
+			if !info.ReasoningSummary {
+				return chat.Unsupported("output", "selected agent does not provide reasoning summaries")
+			}
+		}
+		return nil
+	}
+	switch event.Type {
+	case chat.EventItem:
+		return checkItem(event.Item)
+	case chat.EventTextDelta:
+		if !info.OutputModalities.Has(chat.ModalityText) {
+			return chat.Unsupported("output", "selected agent does not provide text output")
+		}
+	case chat.EventToolCallStart, chat.EventToolCallDelta, chat.EventToolCallDone:
+		if !info.ClientTools {
+			return chat.Unsupported("tools", "selected agent does not hand tool calls to the client")
+		}
+	}
+	return nil
+}
+
+// ValidateRequestedOutput checks an agent output event against the modalities
+// the caller actually requested.
+func ValidateRequestedOutput(event chat.Event, modalities chat.Modality) error {
+	checkPart := func(part chat.Part) error {
+		var modality chat.Modality
+		switch part.Type {
+		case chat.PartText:
+			modality = chat.ModalityText
+		case chat.PartImage:
+			modality = chat.ModalityImage
+		case chat.PartAudio:
+			modality = chat.ModalityAudio
+		case chat.PartFile:
+			modality = chat.ModalityFile
+		default:
+			return nil
+		}
+		if !modalities.Has(modality) {
+			return chat.Unsupported("modalities", "agent emitted an output modality that was not requested")
+		}
+		return nil
+	}
+	checkItem := func(item chat.Item) error {
+		switch item.Type {
+		case chat.ItemMessage, chat.ItemMedia:
+			for _, part := range item.Content {
+				if err := checkPart(part); err != nil {
+					return err
+				}
+			}
+		case chat.ItemFunctionCallOutput:
+			for _, part := range item.Output {
+				if err := checkPart(part); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	switch event.Type {
+	case chat.EventItem:
+		return checkItem(event.Item)
+	case chat.EventTextDelta:
+		return checkPart(chat.TextPart(event.Delta))
+	}
+	return nil
 }

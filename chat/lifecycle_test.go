@@ -7,22 +7,22 @@ import (
 )
 
 func TestCapabilitiesNormalize(t *testing.T) {
-	zero := Capabilities{}.Normalize()
+	zero := Info{}.Normalize()
 	assert.True(t, zero.InputModalities.Has(ModalityText))
 	assert.True(t, zero.OutputModalities.Has(ModalityText))
 	assert.True(t, zero.GenerationControls.Has(ControlMaxOutputTokens))
 	assert.True(t, zero.GenerationControls.Has(ControlTemperature))
 
-	withImage := Capabilities{ImageGeneration: true}.Normalize()
+	withImage := Info{ImageGeneration: true}.Normalize()
 	assert.True(t, withImage.OutputModalities.Has(ModalityImage))
 
-	withTools := Capabilities{Tools: true}.Normalize()
+	withTools := Info{Tools: true}.Normalize()
 	assert.True(t, withTools.GenerationControls.Has(ControlParallelToolCalls))
 
-	withReasoning := Capabilities{ReasoningSummary: true}.Normalize()
+	withReasoning := Info{ReasoningSummary: true}.Normalize()
 	assert.True(t, withReasoning.GenerationControls.Has(ControlReasoning))
 
-	withAudio := Capabilities{OutputModalities: ModalityAudio}.Normalize()
+	withAudio := Info{OutputModalities: ModalityAudio}.Normalize()
 	assert.True(t, withAudio.GenerationControls.Has(ControlAudio))
 }
 

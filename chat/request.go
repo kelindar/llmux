@@ -217,8 +217,9 @@ func (l Limits) Normalize() Limits {
 	return l
 }
 
-// Capabilities describes what the selected agent can actually execute.
-type Capabilities struct {
+// Info describes the selected agent for clients: a human-readable
+// description plus what the agent can actually execute.
+type Info struct {
 	InputModalities    Modality
 	OutputModalities   Modality
 	GenerationControls GenerationControl
@@ -229,6 +230,11 @@ type Capabilities struct {
 	ReasoningSummary   bool
 	ImageGeneration    bool
 	Continuation       bool
+
+	// Description is a human-readable summary of the agent. Resolver
+	// implementations should set it; llmux surfaces it as the MCP tool
+	// description when the agent is exposed through /mcp.
+	Description string
 }
 
 // GenerationControl identifies a generation control understood by an agent.
@@ -247,8 +253,8 @@ const (
 // Has reports whether c includes all bits in other.
 func (c GenerationControl) Has(other GenerationControl) bool { return c&other == other }
 
-// Normalize fills the defaults implied by a zero Capabilities value.
-func (c Capabilities) Normalize() Capabilities {
+// Normalize fills the defaults implied by a zero Info value.
+func (c Info) Normalize() Info {
 	if c.InputModalities == 0 {
 		c.InputModalities = ModalityText
 	}

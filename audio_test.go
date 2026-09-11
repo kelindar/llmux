@@ -54,7 +54,7 @@ func TestParseSpeechVoice(t *testing.T) {
 func TestSpeechNotConfigured(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	assert.Equal(t, "not_found", responseError(t, recorder)["code"])
@@ -63,7 +63,7 @@ func TestSpeechNotConfigured(t *testing.T) {
 func TestTranscriptionNotConfigured(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	recorder := postRaw(t, handler, "/audio/transcriptions", []byte("x"), "application/json", nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
@@ -71,7 +71,7 @@ func TestTranscriptionNotConfigured(t *testing.T) {
 func TestTranscriptionContentType(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 	recorder := postRaw(t, handler, "/audio/transcriptions", []byte("x"), "application/json", nil)
@@ -82,7 +82,7 @@ func TestTranscriptionContentType(t *testing.T) {
 func TestTranscriptionMissingFields(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 
@@ -97,7 +97,7 @@ func TestTranscriptionMissingFields(t *testing.T) {
 func TestTranscriptionUnsupportedField(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 	var body bytes.Buffer
@@ -117,7 +117,7 @@ func TestTranscriptionUnsupportedField(t *testing.T) {
 func TestTranscriptionFormats(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
 		return Transcription{Text: "hello"}, nil
 	})))
 
@@ -143,7 +143,7 @@ func TestTranscriptionFormats(t *testing.T) {
 func TestTranscriptionDuplicateFile(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 	var body bytes.Buffer
@@ -165,7 +165,7 @@ func TestTranscriptionDuplicateFile(t *testing.T) {
 func TestTranscriptionFailure(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, chat.Invalid("file", "bad audio")
 	})))
 	recorder := postTranscription(t, handler, map[string]string{"model": "whisper"})
@@ -175,7 +175,7 @@ func TestTranscriptionFailure(t *testing.T) {
 func TestTranscriptionTemperature(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 
@@ -189,7 +189,7 @@ func TestTranscriptionTemperature(t *testing.T) {
 func TestSpeechValidation(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+	}), chat.Info{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 		return Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
 	})))
 
@@ -214,7 +214,7 @@ func TestSpeechValidation(t *testing.T) {
 func TestSpeechObjectVoice(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(_ context.Context, req SpeechRequest) (Speech, error) {
+	}), chat.Info{}, WithSpeaker(SpeakerFunc(func(_ context.Context, req SpeechRequest) (Speech, error) {
 		assert.Equal(t, "custom", req.Voice)
 		return Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
 	})))
@@ -225,7 +225,7 @@ func TestSpeechObjectVoice(t *testing.T) {
 func TestSpeechBinaryResponse(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+	}), chat.Info{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 		return Speech{Data: []byte("audio"), Format: "wav"}, nil
 	})))
 	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy","response_format":"wav"}`, nil)
@@ -237,7 +237,7 @@ func TestSpeechErrors(t *testing.T) {
 	t.Run("empty audio", func(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+		}), chat.Info{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 			return Speech{}, nil
 		})))
 		recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"hi","voice":"alloy"}`, nil)
@@ -248,7 +248,7 @@ func TestSpeechErrors(t *testing.T) {
 		var logged error
 		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{},
+		}), chat.Info{},
 			WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 				return Speech{}, errors.New("speaker down")
 			})),
@@ -262,7 +262,7 @@ func TestSpeechErrors(t *testing.T) {
 	t.Run("output too large", func(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{},
+		}), chat.Info{},
 			WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 				return Speech{Data: []byte("0123456789")}, nil
 			})),

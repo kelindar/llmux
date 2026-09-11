@@ -43,8 +43,8 @@ func main() {
 	agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{}, nil
 	})
 	handler := llmux.New(resolver,
 		llmux.WithModels(chat.Model{ID: "bench"}),

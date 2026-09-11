@@ -34,8 +34,8 @@ func main() {
 		}
 		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{
 			Continuation: true,
 			Extensions:   map[string]bool{"x-durable": true},
 		}, nil

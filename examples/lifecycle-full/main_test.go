@@ -24,8 +24,8 @@ func TestLifecycleFull(t *testing.T) {
 		}
 		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-		return agent, chat.Capabilities{Continuation: true}, nil
+	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{Continuation: true}, nil
 	})
 	mux := http.NewServeMux()
 	handler := llmux.New(resolver, llmux.WithLifecycle(store.Accept), llmux.WithContinuationStore(store), llmux.WithStoreDefault(true))
@@ -95,8 +95,8 @@ func TestIdempotencyKey(t *testing.T) {
 	})
 	mux := http.NewServeMux()
 	handler := llmux.New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-			return agent, chat.Capabilities{Continuation: true}, nil
+		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+			return agent, chat.Info{Continuation: true}, nil
 		}),
 		llmux.WithLifecycle(store.Accept),
 		llmux.WithContinuationStore(store),
@@ -131,8 +131,8 @@ func TestDurableExample(t *testing.T) {
 	})
 	mux := http.NewServeMux()
 	handler := llmux.New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-			return agent, chat.Capabilities{Continuation: true, Extensions: map[string]bool{"x-durable": true}}, nil
+		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+			return agent, chat.Info{Continuation: true, Extensions: map[string]bool{"x-durable": true}}, nil
 		}),
 		llmux.WithLifecycle(store.Accept),
 		llmux.WithContinuationStore(store),

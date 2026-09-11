@@ -40,7 +40,7 @@ func TestStreamFailureLifecycle(t *testing.T) {
 				}
 				return chat.Outcome{}, errors.New("backend secret")
 			})
-			recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), test.path, test.body, test.headers)
+			recorder := postJSON(t, testHandler(agent, chat.Info{}), test.path, test.body, test.headers)
 			require.Equal(t, http.StatusOK, recorder.Code)
 			assert.NotContains(t, recorder.Body.String(), "backend secret")
 			records := readSSE(t, recorder.Result().Body)
@@ -60,7 +60,7 @@ func TestStreamValidation(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.MediaItem(chat.ImagePart(chat.InlineMedia("image/png", []byte{1}))))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/chat/completions", `{"model":"agent/basic","stream":true,"messages":[{"role":"user","content":"draw"}]}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{}), "/chat/completions", `{"model":"agent/basic","stream":true,"messages":[{"role":"user","content":"draw"}]}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
 	assert.NotContains(t, recorder.Body.String(), "text/event-stream")
@@ -70,7 +70,7 @@ func TestImageToolRequired(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.MediaItem(chat.ImagePart(chat.InlineMedia("image/png", []byte{1}))))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{OutputModalities: chat.ModalityText | chat.ModalityImage, ImageGeneration: true}), "/responses", `{"model":"agent/image","input":"draw"}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{OutputModalities: chat.ModalityText | chat.ModalityImage, ImageGeneration: true}), "/responses", `{"model":"agent/image","input":"draw"}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
 }
@@ -79,7 +79,7 @@ func TestReasoningRequestGate(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.OutputItem(chat.Item{Type: chat.ItemReasoning, Summary: []chat.Part{chat.SummaryPart("brief")}}))
 	})
-	caps := chat.Capabilities{ReasoningSummary: true}
+	caps := chat.Info{ReasoningSummary: true}
 	denied := postJSON(t, testHandler(agent, caps), "/responses", `{"model":"agent/reasoning","input":"think"}`, nil)
 	require.Equal(t, http.StatusBadRequest, denied.Code)
 	assert.Equal(t, "unsupported", responseError(t, denied)["code"])
@@ -179,7 +179,7 @@ func TestContinuation(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text(strconv.Itoa(len(req.Input))))
 	})
-	handler := testHandler(agent, chat.Capabilities{Continuation: true}, WithContinuationStore(store), WithLifecycle(life.Accept))
+	handler := testHandler(agent, chat.Info{Continuation: true}, WithContinuationStore(store), WithLifecycle(life.Accept))
 
 	first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"first"}`, nil)
 	require.Equal(t, http.StatusOK, first.Code)
@@ -206,7 +206,7 @@ func TestNamespacedExtension(t *testing.T) {
 		got = string(req.Controls.Extensions["x-vendor-trace"])
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	caps := chat.Capabilities{Extensions: map[string]bool{"x-vendor-trace": true}}
+	caps := chat.Info{Extensions: map[string]bool{"x-vendor-trace": true}}
 	recorder := postJSON(t, testHandler(agent, caps), "/chat/completions", `{"model":"agent/basic","x-vendor-trace":{"enabled":true},"messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.JSONEq(t, `{"enabled":true}`, got)
@@ -216,7 +216,7 @@ func TestUnsupportedChatUser(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/chat/completions", `{"model":"agent/basic","user":"end-user","messages":[{"role":"user","content":"hi"}]}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{}), "/chat/completions", `{"model":"agent/basic","user":"end-user","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
 }
@@ -225,7 +225,7 @@ func TestUnsupportedChatContinuation(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{}), "/chat/completions", `{"model":"agent/basic","previous_response_id":"resp_1","messages":[{"role":"user","content":"hi"}]}`, nil)
+	recorder := postJSON(t, testHandler(agent, chat.Info{}), "/chat/completions", `{"model":"agent/basic","previous_response_id":"resp_1","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
 }
@@ -238,7 +238,7 @@ func TestJSONV2Duplicates(t *testing.T) {
 	for _, body := range bodies {
 		recorder := postJSON(t, testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("unreachable"))
-		}), chat.Capabilities{}), "/chat/completions", body, nil)
+		}), chat.Info{}), "/chat/completions", body, nil)
 		assert.Equal(t, http.StatusBadRequest, recorder.Code)
 	}
 }
@@ -246,7 +246,7 @@ func TestJSONV2Duplicates(t *testing.T) {
 func TestMultipartMalformed(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})))
 	recorder := postRaw(t, handler, "/audio/transcriptions", []byte("--broken\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\nx"), "multipart/form-data; boundary=broken", nil)
@@ -257,7 +257,7 @@ func TestMultipartMalformed(t *testing.T) {
 func TestSpeechSSE(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Capabilities{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
+	}), chat.Info{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
 		return Speech{Data: []byte{1, 2, 3}, Format: "wav"}, nil
 	})))
 	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"say hi","voice":"alloy","response_format":"wav","stream_format":"sse"}`, nil)
@@ -276,7 +276,7 @@ func TestSpeechSSE(t *testing.T) {
 func TestVerboseTranscription(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
 		assert.Equal(t, "sample.wav", req.Filename)
 		return Transcription{Text: "hello", Language: "en", Duration: 1.5, Segments: []TranscriptSegment{{ID: 0, Start: 0, End: 1.5, Text: "hello"}}}, nil
 	})))
@@ -358,7 +358,7 @@ func TestOutcomeDefaults(t *testing.T) {
 func TestMultipartSizeLimit(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Capabilities{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
 		return Transcription{}, nil
 	})), WithLimits(chat.Limits{MaxMultipartBytes: 32}))
 	var body bytes.Buffer
@@ -377,7 +377,7 @@ func TestProtocolFixtures(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("fixture"))
 	})
-	handler := testHandler(agent, chat.Capabilities{})
+	handler := testHandler(agent, chat.Info{})
 	cases := []struct {
 		name    string
 		file    string
@@ -414,7 +414,7 @@ func FuzzProtocolBodies(f *testing.F) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	handler := testHandler(agent, chat.Capabilities{})
+	handler := testHandler(agent, chat.Info{})
 	f.Fuzz(func(t *testing.T, body []byte) {
 		cases := []struct {
 			path    string
@@ -467,7 +467,7 @@ func TestFinalizeError(t *testing.T) {
 	life := &testLifecycle{fail: true}
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
-	}), chat.Capabilities{Continuation: true},
+	}), chat.Info{Continuation: true},
 		WithLifecycle(life.Accept),
 		WithErrorLog(func(_ context.Context, err error) { logged = err }),
 	)
@@ -481,7 +481,7 @@ func TestStreamImmediateFailure(t *testing.T) {
 	var logged error
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("immediate")
-	}), chat.Capabilities{}, WithErrorLog(func(_ context.Context, err error) { logged = err }))
+	}), chat.Info{}, WithErrorLog(func(_ context.Context, err error) { logged = err }))
 	recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	assert.NotContains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
@@ -494,7 +494,7 @@ func TestAdapterResponseError(t *testing.T) {
 		media.Format = "wav"
 		return chat.Outcome{}, emit(chat.MediaItem(chat.AudioPart(media)))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{OutputModalities: chat.ModalityText | chat.ModalityAudio}),
+	recorder := postJSON(t, testHandler(agent, chat.Info{OutputModalities: chat.ModalityText | chat.ModalityAudio}),
 		"/chat/completions", `{"model":"agent/audio","messages":[{"role":"user","content":"speak"}]}`, nil)
 	assert.GreaterOrEqual(t, recorder.Code, http.StatusBadRequest)
 }
@@ -503,7 +503,7 @@ func TestImageWithoutTool(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.MediaItem(chat.ImagePart(chat.InlineMedia("image/png", []byte{1}))))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{OutputModalities: chat.ModalityText | chat.ModalityImage, ImageGeneration: true}),
+	recorder := postJSON(t, testHandler(agent, chat.Info{OutputModalities: chat.ModalityText | chat.ModalityImage, ImageGeneration: true}),
 		"/responses", `{"model":"agent/image","stream":true,"input":"draw"}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
@@ -512,7 +512,7 @@ func TestFileOutputReject(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.MediaItem(chat.FilePart(chat.InlineMedia("application/pdf", []byte{1}))))
 	})
-	recorder := postJSON(t, testHandler(agent, chat.Capabilities{OutputModalities: chat.ModalityText}),
+	recorder := postJSON(t, testHandler(agent, chat.Info{OutputModalities: chat.ModalityText}),
 		"/chat/completions", `{"model":"agent/file","messages":[{"role":"user","content":"pdf"}]}`, nil)
 	assert.GreaterOrEqual(t, recorder.Code, http.StatusBadRequest)
 }

@@ -1,5 +1,5 @@
-// Package chat contains the protocol-neutral agent, request, event, and
-// capability types shared by llmux and application-owned agents.
+// Package chat contains the protocol-neutral agent, request, event, and info
+// types shared by llmux and application-owned agents.
 package chat
 
 import (
@@ -25,9 +25,9 @@ func (f AgentFunc) Run(ctx context.Context, req *Request, emit Emit) (Outcome, e
 	return f(ctx, req, emit)
 }
 
-// Resolver selects an agent and its declared capabilities for a target name.
+// Resolver selects an agent and its declared Info for a target name.
 // Applications with resolver structs should pass a method value.
-type Resolver func(context.Context, string) (Agent, Capabilities, error)
+type Resolver func(context.Context, string) (Agent, Info, error)
 
 // Emit is the serial event function passed to Agent.Run.
 // Emit copies nested item data into execution state before returning, so the

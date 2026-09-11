@@ -16,7 +16,7 @@ func TestRouteBodyErrors(t *testing.T) {
 	agent := chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("unreachable")
 	})
-	handler := testHandler(agent, chat.Capabilities{}, WithLimits(chat.Limits{MaxRequestBytes: 8}))
+	handler := testHandler(agent, chat.Info{}, WithLimits(chat.Limits{MaxRequestBytes: 8}))
 
 	cases := []struct {
 		name    string
@@ -47,7 +47,7 @@ func TestRouteInvalidJSON(t *testing.T) {
 	agent := chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("unreachable")
 	})
-	handler := testHandler(agent, chat.Capabilities{})
+	handler := testHandler(agent, chat.Info{})
 
 	cases := []struct {
 		name    string
@@ -69,7 +69,7 @@ func TestRouteInvalidJSON(t *testing.T) {
 func TestAnthropicVersionRequired(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("unreachable")
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	recorder := postJSON(t, handler, "/messages", `{"model":"agent/basic","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	body := decodeResponse(t, recorder)
@@ -79,7 +79,7 @@ func TestAnthropicVersionRequired(t *testing.T) {
 func TestDirectMount(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
@@ -87,7 +87,7 @@ func TestDirectMount(t *testing.T) {
 func TestStripPrefixMount(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	mounted := http.StripPrefix("/v1", handler)
 	recorder := postJSON(t, mounted, "/v1/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -96,7 +96,7 @@ func TestStripPrefixMount(t *testing.T) {
 func TestWrongPrefix404(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Capabilities{})
+	}), chat.Info{})
 	recorder := postJSON(t, handler, "/v1/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
@@ -104,7 +104,7 @@ func TestWrongPrefix404(t *testing.T) {
 func TestRouteParseErrors(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, errors.New("unreachable")
-	}), chat.Capabilities{})
+	}), chat.Info{})
 
 	cases := []struct {
 		name    string

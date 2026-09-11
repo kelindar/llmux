@@ -3,7 +3,6 @@ package llmux
 import (
 	"context"
 	"errors"
-	"maps"
 	"net/http"
 	"time"
 
@@ -123,7 +122,7 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	}
 
 	meta := responseMeta{
-		Response: initialResponse(acceptance.Response, &parsed),
+		Response: internalprotocol.InitialResponse(acceptance.Response, &parsed),
 		Activity: acceptance.Activity,
 	}
 	acceptance.Response = meta.Response
@@ -133,7 +132,7 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		switch {
 		case parsed.Kind == protocolResponses && requiresImageGeneration(event) && !parsed.Request.Controls.ImageGeneration:
 			return chat.Unsupported("output", "image output requires the Responses image_generation tool")
-		case requiresReasoningSummary(event) && (parsed.Request.Controls.Reasoning == nil || !parsed.Request.Controls.Reasoning.Summary):
+		case internalprotocol.RequiresReasoningSummary(event) && (parsed.Request.Controls.Reasoning == nil || !parsed.Request.Controls.Reasoning.Summary):
 			return chat.Unsupported("reasoning.summary", "reasoning summary output was not requested")
 		case event.Type == chat.EventActivity && !acceptance.Activity:
 			return chat.Unsupported("output", "activity events were not enabled for this request")
@@ -144,10 +143,10 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		if event.Type == chat.EventActivity {
 			return nil
 		}
-		if err := validateOutputEvent(event, capabilities); err != nil {
+		if err := internalprotocol.ValidateOutputEvent(event, capabilities); err != nil {
 			return err
 		}
-		return validateRequestedOutput(event, parsed.Request.Output.Modalities)
+		return internalprotocol.ValidateRequestedOutput(event, parsed.Request.Output.Modalities)
 	}
 
 	if acceptance.Replay != nil {
@@ -158,61 +157,43 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 		// No lifecycle configured: fall through with library defaults.
 	}
 
-	if acceptance.RunTimeout < 0 {
-		invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
-		if acceptance.Finish != nil {
-			failed := meta.Response
-			failed.Status = chat.StatusFailed
-			failed.Error = publicAPIError(invalid)
-			failed.CompletedAt = unixNow()
-			_ = acceptance.Finish(r.Context(), &failed, invalid)
-		}
-		writeProtocolError(w, parsed.Kind, invalid)
-		return
-	}
-
-	runCtx := r.Context()
-	if acceptance.RunTimeout > 0 {
-		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), acceptance.RunTimeout)
-		defer cancel()
-	}
-
 	if parsed.Stream {
+		if acceptance.RunTimeout < 0 {
+			invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
+			if acceptance.Finish != nil {
+				failed := meta.Response
+				failed.Status = chat.StatusFailed
+				failed.Error = publicAPIError(invalid)
+				failed.CompletedAt = unixNow()
+				_ = acceptance.Finish(r.Context(), &failed, invalid)
+			}
+			writeProtocolError(w, parsed.Kind, invalid)
+			return
+		}
+		runCtx := r.Context()
+		if acceptance.RunTimeout > 0 {
+			var cancel context.CancelFunc
+			runCtx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), acceptance.RunTimeout)
+			defer cancel()
+		}
 		h.serveStream(w, r, parsed, agent, adapter, meta, acceptance, runCtx, validateEvent)
 		return
 	}
-	h.serveOrdinary(w, r, parsed, agent, adapter, meta, acceptance, runCtx, validateEvent)
-}
-
-func initialResponse(seed chat.Response, parsed *parsedRequest) chat.Response {
-	resp := seed
-	if resp.ID == "" {
-		resp.ID = newID()
-	}
-	if resp.Created == 0 {
-		resp.Created = unixNow()
-	}
-	if len(resp.Metadata) == 0 {
-		resp.Metadata = cloneMetadata(parsed.Metadata)
-	} else {
-		resp.Metadata = cloneMetadata(resp.Metadata)
-	}
-	resp.Store = parsed.Retain
-	resp.Target = parsed.Request.Target
-	resp.Instructions = parsed.Request.Instructions
-	if parsed.Previous != nil {
-		p := *parsed.Previous
-		resp.Previous = &p
-	}
-	return resp
+	h.serveOrdinary(w, r, parsed, agent, adapter, meta, acceptance, validateEvent)
 }
 
 func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Acceptance, bool, error) {
+	return h.acceptContext(r.Context(), r.Header.Get("Idempotency-Key"), parsed)
+}
+
+// acceptContext applies Lifecycle for one canonical request. Idempotency keys
+// come from the calling protocol: the Idempotency-Key header for chat
+// endpoints and none for MCP tool calls.
+func (h *Handler) acceptContext(ctx context.Context, idempotencyKey string, parsed *parsedRequest) (chat.Acceptance, bool, error) {
 	if h.lifecycle == nil {
 		return chat.Acceptance{}, false, nil
 	}
-	accepted, err := h.lifecycle(r.Context(), &chat.TurnRequest{
+	accepted, err := h.lifecycle(ctx, &chat.TurnRequest{
 		Request:        &parsed.Request,
 		Turn:           parsed.Turn,
 		Previous:       parsed.Previous,
@@ -220,7 +201,7 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Accep
 		Store:          parsed.Store,
 		Retain:         parsed.Retain,
 		Stream:         parsed.Stream,
-		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		return chat.Acceptance{}, true, err
@@ -337,23 +318,13 @@ func (h *Handler) serveOrdinary(
 	adapter protocolAdapter,
 	meta responseMeta,
 	acceptance chat.Acceptance,
-	runCtx context.Context,
 	validateEvent func(chat.Event) error,
 ) {
-	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, func(event chat.Event) error {
-		return validateEvent(event)
-	})
-	resp := buildResponse(meta.Response, result, runErr)
-	meta.Response = resp
-	finalErr := h.finishTurn(runCtx, acceptance, &resp, runErr)
+	resp, err := h.executeOrdinary(r.Context(), parsed, agent, &meta, acceptance, validateEvent)
 	switch {
-	case runErr != nil:
-		h.logError(r.Context(), runErr)
-		writeProtocolError(w, parsed.Kind, runErr)
-		return
-	case finalErr != nil:
-		h.logError(r.Context(), finalErr)
-		writeProtocolError(w, parsed.Kind, finalErr)
+	case err != nil:
+		h.logError(r.Context(), err)
+		writeProtocolError(w, parsed.Kind, err)
 		return
 	}
 	body, err := adapter.Response(parsed.Request, execution.Result{Items: resp.Output, Outcome: outcomeFromResponse(resp)}, meta)
@@ -363,6 +334,52 @@ func (h *Handler) serveOrdinary(
 		return
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// executeOrdinary runs a fully validated parsed request to completion without
+// streaming delivery. It owns bounded execution (Acceptance.RunTimeout),
+// lifecycle Finish exactly once for accepted executions, and error
+// sanitization. The returned response is finalized and safe to encode; err is
+// the operational error to surface through the calling protocol. The response
+// is persisted (Finish) before a successful result is returned.
+func (h *Handler) executeOrdinary(
+	ctx context.Context,
+	parsed parsedRequest,
+	agent chat.Agent,
+	meta *responseMeta,
+	acceptance chat.Acceptance,
+	validateEvent func(chat.Event) error,
+) (chat.Response, error) {
+	if acceptance.RunTimeout < 0 {
+		invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
+		if acceptance.Finish != nil {
+			failed := meta.Response
+			failed.Status = chat.StatusFailed
+			failed.Error = publicAPIError(invalid)
+			failed.CompletedAt = unixNow()
+			_ = acceptance.Finish(ctx, &failed, invalid)
+		}
+		return chat.Response{}, invalid
+	}
+
+	runCtx := ctx
+	if acceptance.RunTimeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), acceptance.RunTimeout)
+		defer cancel()
+	}
+
+	result, runErr := execution.Run(runCtx, &parsed.Request, agent, h.limits, validateEvent)
+	resp := buildResponse(meta.Response, result, runErr)
+	meta.Response = resp
+	finalErr := h.finishTurn(runCtx, acceptance, &resp, runErr)
+	switch {
+	case runErr != nil:
+		return resp, runErr
+	case finalErr != nil:
+		return resp, finalErr
+	}
+	return resp, nil
 }
 
 func (h *Handler) finishTurn(
@@ -441,13 +458,6 @@ func outcomeFromResponse(resp chat.Response) chat.Outcome {
 }
 
 func unixNow() int64 { return time.Now().Unix() }
-
-func cloneMetadata(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
-}
 
 func cloneItems(items []chat.Item) []chat.Item {
 	if len(items) == 0 {

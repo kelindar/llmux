@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kelindar/llmux/chat"
+	"github.com/kelindar/llmux/internal/mcp"
 )
 
 // Option configures Handler. Options are applied once by New.
@@ -28,6 +29,7 @@ type Handler struct {
 	transcriber  Transcriber
 	speaker      Speaker
 	errorLog     func(context.Context, error)
+	mcp          *mcp.Transport
 }
 
 // New builds a Handler with the given resolver and options.
@@ -134,9 +136,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveModels(w, r)
+	case "/mcp":
+		if h.mcp == nil {
+			writeProtocolError(w, protocolChat, notFoundError())
+			return
+		}
+		h.serveMCP(w, r)
 	default:
-		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "not found"})
+		writeProtocolError(w, protocolChat, notFoundError())
 	}
+}
+
+func notFoundError() *chat.Error {
+	return &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "not found"}
 }
 
 func methodError(method string) *chat.Error {
@@ -251,18 +263,18 @@ func fmtError(param, message string, err error) *chat.Error {
 	return &chat.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request", Param: param, Message: message, Err: err}
 }
 
-func (h *Handler) resolve(ctx context.Context, target string) (chat.Agent, chat.Capabilities, error) {
+func (h *Handler) resolve(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
 	if h.resolver == nil {
-		return nil, chat.Capabilities{}, errors.New("llmux: no agent resolver configured")
+		return nil, chat.Info{}, errors.New("llmux: no agent resolver configured")
 	}
-	agent, capabilities, err := h.resolver(ctx, target)
+	agent, info, err := h.resolver(ctx, target)
 	switch {
 	case err != nil:
-		return nil, chat.Capabilities{}, err
+		return nil, chat.Info{}, err
 	case agent == nil:
-		return nil, chat.Capabilities{}, errors.New("llmux: resolver returned a nil agent")
+		return nil, chat.Info{}, errors.New("llmux: resolver returned a nil agent")
 	}
-	return agent, capabilities.Normalize(), nil
+	return agent, info.Normalize(), nil
 }
 
 func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) error {
@@ -340,7 +352,7 @@ func (h *Handler) resolveItemMedia(ctx context.Context, item *chat.Item, count *
 	return nil
 }
 
-func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Capabilities) error {
+func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Info) error {
 	req := &parsed.Request
 	if strings.TrimSpace(req.Target) == "" {
 		return chat.Invalid("model", "model is required")
@@ -474,116 +486,11 @@ func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Capabilities) 
 	return nil
 }
 
-func validateOutputEvent(event chat.Event, caps chat.Capabilities) error {
-	caps = caps.Normalize()
-	checkPart := func(part chat.Part) error {
-		switch {
-		case part.Type == chat.PartText && !caps.OutputModalities.Has(chat.ModalityText):
-			return chat.Unsupported("output", "selected agent does not provide text output")
-		case part.Type == chat.PartImage && !caps.OutputModalities.Has(chat.ModalityImage):
-			return chat.Unsupported("output", "selected agent does not provide image output")
-		case part.Type == chat.PartAudio && !caps.OutputModalities.Has(chat.ModalityAudio):
-			return chat.Unsupported("output", "selected agent does not provide audio output")
-		case part.Type == chat.PartFile && !caps.OutputModalities.Has(chat.ModalityFile):
-			return chat.Unsupported("output", "selected agent does not provide file output")
-		}
-		return nil
-	}
-	checkItem := func(item chat.Item) error {
-		switch item.Type {
-		case chat.ItemMessage, chat.ItemMedia:
-			for _, part := range item.Content {
-				if err := checkPart(part); err != nil {
-					return err
-				}
-			}
-		case chat.ItemFunctionCall:
-			if !caps.ClientTools {
-				return chat.Unsupported("tools", "selected agent does not hand tool calls to the client")
-			}
-		case chat.ItemFunctionCallOutput:
-			for _, part := range item.Output {
-				if err := checkPart(part); err != nil {
-					return err
-				}
-			}
-		case chat.ItemReasoning:
-			if !caps.ReasoningSummary {
-				return chat.Unsupported("output", "selected agent does not provide reasoning summaries")
-			}
-		}
-		return nil
-	}
-	switch event.Type {
-	case chat.EventItem:
-		return checkItem(event.Item)
-	case chat.EventTextDelta:
-		if !caps.OutputModalities.Has(chat.ModalityText) {
-			return chat.Unsupported("output", "selected agent does not provide text output")
-		}
-	case chat.EventToolCallStart, chat.EventToolCallDelta, chat.EventToolCallDone:
-		if !caps.ClientTools {
-			return chat.Unsupported("tools", "selected agent does not hand tool calls to the client")
-		}
-	}
-	return nil
-}
-
 func requiresImageGeneration(event chat.Event) bool {
 	return event.Type == chat.EventItem &&
 		event.Item.Type == chat.ItemMedia &&
 		len(event.Item.Content) == 1 &&
 		event.Item.Content[0].Type == chat.PartImage
-}
-
-func requiresReasoningSummary(event chat.Event) bool {
-	return event.Type == chat.EventItem && event.Item.Type == chat.ItemReasoning
-}
-
-func validateRequestedOutput(event chat.Event, modalities chat.Modality) error {
-	checkPart := func(part chat.Part) error {
-		var modality chat.Modality
-		switch part.Type {
-		case chat.PartText:
-			modality = chat.ModalityText
-		case chat.PartImage:
-			modality = chat.ModalityImage
-		case chat.PartAudio:
-			modality = chat.ModalityAudio
-		case chat.PartFile:
-			modality = chat.ModalityFile
-		default:
-			return nil
-		}
-		if !modalities.Has(modality) {
-			return chat.Unsupported("modalities", "agent emitted an output modality that was not requested")
-		}
-		return nil
-	}
-	checkItem := func(item chat.Item) error {
-		switch item.Type {
-		case chat.ItemMessage, chat.ItemMedia:
-			for _, part := range item.Content {
-				if err := checkPart(part); err != nil {
-					return err
-				}
-			}
-		case chat.ItemFunctionCallOutput:
-			for _, part := range item.Output {
-				if err := checkPart(part); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	switch event.Type {
-	case chat.EventItem:
-		return checkItem(event.Item)
-	case chat.EventTextDelta:
-		return checkPart(chat.TextPart(event.Delta))
-	}
-	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

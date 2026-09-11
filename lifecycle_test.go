@@ -158,7 +158,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("hi"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		body := decodeResponse(t, rec)
@@ -171,7 +171,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("hi"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
@@ -185,7 +185,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			calls++
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":false,"input":"x"}`, nil)
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		assert.Equal(t, 0, calls)
@@ -198,7 +198,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
 			return chat.Outcome{Usage: &chat.Usage{Total: 3}}, emit(chat.Text("once"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept), WithContinuationStore(life))
 		headers := map[string]string{"Idempotency-Key": "k1"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
 		require.Equal(t, http.StatusOK, first.Code)
@@ -212,7 +212,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("stable"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "replay-iso"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
 		require.Equal(t, http.StatusOK, first.Code)
@@ -240,7 +240,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("live"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, map[string]string{"Idempotency-Key": "live"})
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Contains(t, rec.Body.String(), "live")
@@ -267,7 +267,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, 1, life.accepts)
@@ -279,7 +279,7 @@ func TestLifecycle(t *testing.T) {
 		life.failOnce.Store(true)
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusInternalServerError, rec.Code)
 		assert.Equal(t, 1, life.finals)
@@ -290,7 +290,7 @@ func TestLifecycle(t *testing.T) {
 		life.failOnce.Store(true)
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
@@ -304,7 +304,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			turns = append(turns, len(req.Input))
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(func(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
+		}), chat.Info{Continuation: true}, WithLifecycle(func(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
 			acceptTurn = len(turn.Turn)
 			acceptInput = len(turn.Request.Input)
 			return life.Accept(ctx, turn)
@@ -343,7 +343,7 @@ func TestLifecycle(t *testing.T) {
 		var ext bool
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{
+		}), chat.Info{
 			Continuation:       true,
 			GenerationControls: chat.ControlTemperature | chat.ControlMaxOutputTokens,
 			Tools:              true,
@@ -368,7 +368,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			require.NoError(t, emit(chat.Activity("progress", jsontext.Value(`{"pct":10}`))))
 			return chat.Outcome{}, emit(chat.Text("done"))
-		}), chat.Capabilities{Continuation: true, Extensions: map[string]bool{"x-activity": true}}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true, Extensions: map[string]bool{"x-activity": true}}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"x-activity":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Contains(t, rec.Body.String(), "response.activity.progress")
@@ -384,7 +384,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			require.Error(t, emit(chat.Activity("progress", jsontext.Value(`{"pct":10}`))))
 			return chat.Outcome{}, emit(chat.Text("done"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.NotContains(t, rec.Body.String(), "response.activity.")
@@ -443,7 +443,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
 			return chat.Outcome{}, &chat.Error{Status: 503, Type: "server_error", Code: "upstream", Message: "service unavailable"}
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "fail-ord"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
 		require.Equal(t, http.StatusServiceUnavailable, first.Code)
@@ -462,7 +462,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
 			return chat.Outcome{}, &chat.Error{Status: 503, Type: "server_error", Code: "upstream", Message: "service unavailable"}
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "fail-stream"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, headers)
 		require.Equal(t, http.StatusServiceUnavailable, first.Code)
@@ -495,7 +495,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
 			return chat.Outcome{Status: chat.StatusIncomplete, StopReason: chat.StopLength}, nil
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "inc-replay"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
 		require.Equal(t, http.StatusOK, first.Code)
@@ -510,7 +510,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("once"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "ts"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, headers)
 		require.Equal(t, http.StatusOK, first.Code)
@@ -549,7 +549,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			calls.Add(1)
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		headers := map[string]string{"Idempotency-Key": "meta"}
 		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"metadata":{"original":"1"},"input":"x"}`, headers)
 		require.Equal(t, http.StatusOK, first.Code)
@@ -567,7 +567,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		body := decodeResponse(t, rec)
@@ -582,7 +582,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept), WithStoreDefault(true))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept), WithStoreDefault(true))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		body := decodeResponse(t, rec)
@@ -593,7 +593,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept), WithStoreDefault(true))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept), WithStoreDefault(true))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":false,"input":"x"}`, nil)
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
@@ -602,7 +602,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		body := decodeResponse(t, rec)
@@ -612,7 +612,7 @@ func TestLifecycle(t *testing.T) {
 	t.Run("retain without lifecycle rejected", func(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{})
+		}), chat.Info{})
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, nil)
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		assert.Equal(t, "unsupported", responseError(t, rec)["code"])
@@ -624,7 +624,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(ctx context.Context, _ *chat.Request, _ chat.Emit) (chat.Outcome, error) {
 			<-ctx.Done()
 			return chat.Outcome{Status: chat.StatusCancelled}, ctx.Err()
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, "cleanup"))
 			handler.ServeHTTP(w, r)
@@ -637,7 +637,7 @@ func TestLifecycle(t *testing.T) {
 		life := newMemoryLife()
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		recorder := postJSON(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, "user-1"))
 			handler.ServeHTTP(w, r)
@@ -649,7 +649,7 @@ func TestLifecycle(t *testing.T) {
 	t.Run("prefix mount", func(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Capabilities{})
+		}), chat.Info{})
 		mounted := http.StripPrefix("/api/v1", handler)
 		rec := postJSON(t, mounted, "/api/v1/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -669,7 +669,7 @@ func TestLifecycle(t *testing.T) {
 			require.NoError(t, emit(chat.Text("late")))
 			close(done)
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{Continuation: true, Extensions: map[string]bool{"x-durable": true}}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true, Extensions: map[string]bool{"x-durable": true}}, WithLifecycle(life.Accept))
 
 		httpCtx, httpCancel := context.WithCancel(context.Background())
 		req := httptest.NewRequestWithContext(httpCtx, http.MethodPost, "/responses", strings.NewReader(`{"model":"agent/basic","stream":true,"store":true,"x-durable":true,"input":"x"}`))
@@ -696,7 +696,7 @@ func TestLifecycle(t *testing.T) {
 			<-ctx.Done()
 			close(cancelled)
 			return chat.Outcome{Status: chat.StatusCancelled}, ctx.Err()
-		}), chat.Capabilities{})
+		}), chat.Info{})
 		httpCtx, httpCancel := context.WithCancel(context.Background())
 		req := httptest.NewRequestWithContext(httpCtx, http.MethodPost, "/chat/completions", strings.NewReader(`{"model":"agent/basic","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -718,7 +718,7 @@ func TestLifecycle(t *testing.T) {
 		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			t.Fatal("agent must not run")
 			return chat.Outcome{}, nil
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, map[string]string{"Idempotency-Key": "neg"})
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		assert.Equal(t, 1, life.finals)
@@ -732,7 +732,7 @@ func TestLifecycle(t *testing.T) {
 		life.allowNoStore = true
 		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, emit(chat.Text("ephemeral"))
-		}), chat.Capabilities{Continuation: true}, WithLifecycle(life.Accept))
+		}), chat.Info{Continuation: true}, WithLifecycle(life.Accept))
 		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":false,"input":"x"}`, nil)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, 1, life.finals)

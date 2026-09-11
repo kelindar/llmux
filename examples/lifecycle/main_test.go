@@ -19,8 +19,8 @@ func TestLifecycleMinimal(t *testing.T) {
 		return chat.Outcome{}, emit.Text("hello")
 	})
 	handler := llmux.New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Capabilities, error) {
-			return agent, chat.Capabilities{Continuation: true}, nil
+		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+			return agent, chat.Info{Continuation: true}, nil
 		}),
 		llmux.WithLifecycle(store.Accept),
 		llmux.WithStoreDefault(true),
