@@ -81,7 +81,7 @@ Paths are exact. Mount under a prefix with `http.StripPrefix` (for example
 Unsupported recognized features return protocol errors instead of being
 ignored. Responses is a compatibility subset, not full OpenAI parity.
 
-## Catalog and Info
+## Catalog and capabilities
 
 `Catalog.List` feeds `/models` and MCP discovery. `Catalog.Load` obtains the
 agent for each call. Listing visibility never replaces Load authorization. A
