@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -186,8 +187,7 @@ func ParseMediaURL(value, detail string) (chat.Media, error) {
 // ParseDataURL decodes a base64 data URL into inline chat.Media.
 func ParseDataURL(value string) (chat.Media, error) {
 	meta, encoded, ok := strings.Cut(value, ",")
-	switch {
-	case !ok, !strings.HasPrefix(meta, "data:"):
+	if !ok || !strings.HasPrefix(meta, "data:") {
 		return chat.Media{}, errors.New("invalid data URL")
 	}
 	meta = strings.TrimPrefix(meta, "data:")
@@ -387,9 +387,7 @@ func ParseFileData(value, param string) (chat.Media, error) {
 		if err != nil {
 			return chat.Media{}, chat.Invalid(param, "must be a valid base64 data URL")
 		}
-		if media.MIMEType == "" {
-			media.MIMEType = "application/octet-stream"
-		}
+		media.MIMEType = cmp.Or(media.MIMEType, "application/octet-stream")
 		return media, nil
 	}
 	data, err := base64.StdEncoding.DecodeString(value)

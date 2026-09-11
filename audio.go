@@ -1,6 +1,7 @@
 package llmux
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -69,10 +70,7 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseFormat := strings.ToLower(strings.TrimSpace(r.FormValue("response_format")))
-	if responseFormat == "" {
-		responseFormat = "json"
-	}
+	responseFormat := cmp.Or(strings.ToLower(strings.TrimSpace(r.FormValue("response_format"))), "json")
 	switch responseFormat {
 	case "json", "text", "verbose_json":
 	default:

@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	"errors"
@@ -148,9 +149,7 @@ func (Adapter) Response(req chat.Request, result execution.Result, meta response
 	if len(resp.Output) == 0 {
 		resp.Output = result.Items
 	}
-	if resp.Status == "" {
-		resp.Status = result.Outcome.Status
-	}
+	resp.Status = cmp.Or(resp.Status, result.Outcome.Status)
 	if resp.Usage == nil {
 		resp.Usage = result.Outcome.Usage
 	}
@@ -179,14 +178,7 @@ func Render(resp chat.Response) (any, error) {
 }
 
 func responseStatus(resp chat.Response, outcome chat.Outcome) string {
-	switch {
-	case resp.Status != "":
-		return string(resp.Status)
-	case outcome.Status != "":
-		return string(outcome.Status)
-	default:
-		return string(chat.StatusCompleted)
-	}
+	return string(cmp.Or(resp.Status, outcome.Status, chat.StatusCompleted))
 }
 
 func responseObject(req chat.Request, resp chat.Response, output []any) wireResponse {

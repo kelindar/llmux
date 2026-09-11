@@ -1,6 +1,7 @@
 package llmux
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -486,9 +487,7 @@ func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Info) error {
 			return chat.Unsupported(key, "selected agent does not support this extension")
 		}
 	}
-	if req.Output.Modalities == 0 {
-		req.Output.Modalities = chat.ModalityText
-	}
+	req.Output.Modalities = cmp.Or(req.Output.Modalities, chat.ModalityText)
 	switch {
 	case req.Controls.ImageGeneration && !caps.ImageGeneration:
 		return chat.Unsupported("tools", "selected agent does not support image generation")

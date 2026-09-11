@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -398,9 +399,7 @@ func parseAnthropicDocument(object map[string]jsontext.Value) (chat.Media, error
 		if err != nil {
 			return chat.Media{}, err
 		}
-		if mime == "" {
-			mime = "application/octet-stream"
-		}
+		mime = cmp.Or(mime, "application/octet-stream")
 		encoded, err := requireString(source, "data")
 		if err != nil {
 			return chat.Media{}, err

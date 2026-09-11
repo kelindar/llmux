@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"cmp"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -177,15 +178,9 @@ func AsError(err error) *chat.Error {
 		if copy.Status < http.StatusBadRequest || copy.Status > 599 {
 			copy.Status = http.StatusInternalServerError
 		}
-		if copy.Type == "" {
-			copy.Type = "server_error"
-		}
-		if copy.Code == "" {
-			copy.Code = "server_error"
-		}
-		if copy.Message == "" {
-			copy.Message = "internal server error"
-		}
+		copy.Type = cmp.Or(copy.Type, "server_error")
+		copy.Code = cmp.Or(copy.Code, "server_error")
+		copy.Message = cmp.Or(copy.Message, "internal server error")
 		return &copy
 	}
 	return &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}

@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -55,9 +56,7 @@ func (s *eventState) addItem(item chat.Item) error {
 	if _, exists := s.indexes[item.ID]; exists {
 		return fmt.Errorf("duplicate output item id %q", item.ID)
 	}
-	if item.Status == "" {
-		item.Status = chat.StatusCompleted
-	}
+	item.Status = cmp.Or(item.Status, chat.StatusCompleted)
 	if err := item.Validate(s.maxMedia, true); err != nil {
 		return err
 	}
@@ -208,9 +207,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			if err := s.addBytes(itemBytes(item)); err != nil {
 				return nil, err
 			}
-			if item.Status == "" {
-				item.Status = chat.StatusCompleted
-			}
+			item.Status = cmp.Or(item.Status, chat.StatusCompleted)
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
@@ -255,12 +252,8 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 					return nil, err
 				}
 			}
-			if item.Status == "" {
-				item.Status = chat.StatusCompleted
-			}
-			if item.Role == "" {
-				item.Role = chat.RoleAssistant
-			}
+			item.Status = cmp.Or(item.Status, chat.StatusCompleted)
+			item.Role = cmp.Or(item.Role, chat.RoleAssistant)
 			if err := s.addItem(item); err != nil {
 				return nil, err
 			}
@@ -269,9 +262,7 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 			normalized = append(normalized, event)
 
 		case chat.ItemReasoning:
-			if item.Status == "" {
-				item.Status = chat.StatusCompleted
-			}
+			item.Status = cmp.Or(item.Status, chat.StatusCompleted)
 			if err := s.addBytes(itemBytes(item)); err != nil {
 				return nil, err
 			}
@@ -435,9 +426,7 @@ func Run(ctx context.Context, req *chat.Request, agent chat.Agent, limits chat.L
 			return state.result(outcome), err
 		}
 	}
-	if outcome.Status == "" {
-		outcome.Status = chat.StatusCompleted
-	}
+	outcome.Status = cmp.Or(outcome.Status, chat.StatusCompleted)
 	if outcome.StopReason == "" {
 		switch outcome.Status {
 		case chat.StatusCancelled:

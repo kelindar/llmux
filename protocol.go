@@ -321,8 +321,7 @@ func (h *Handler) serveOrdinary(
 	validateEvent func(chat.Event) error,
 ) {
 	resp, err := h.executeOrdinary(r.Context(), parsed, agent, &meta, acceptance, validateEvent)
-	switch {
-	case err != nil:
+	if err != nil {
 		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
 		return

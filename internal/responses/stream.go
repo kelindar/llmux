@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	"fmt"
@@ -499,9 +500,7 @@ func (s *responsesStream) Complete(outcome chat.Outcome, items []chat.Item) erro
 		return err
 	}
 	state := s.meta.Response
-	if state.Status == "" {
-		state.Status = outcome.Status
-	}
+	state.Status = cmp.Or(state.Status, outcome.Status)
 	if state.Usage == nil {
 		state.Usage = outcome.Usage
 	}
