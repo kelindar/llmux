@@ -9,6 +9,7 @@ import (
 
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/mcp"
+	internalprotocol "github.com/kelindar/llmux/internal/protocol"
 )
 
 // mcpProtocolVersion is the MCP protocol revision served at /mcp. Requests
@@ -32,41 +33,16 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request) {
 	h.mcp.ServeHTTP(w, r)
 }
 
-// hostAdapter implements the internal/mcp execution seam on Handler. It
-// reuses the exact machinery behind the chat endpoints: Catalog.Load
-// authorization, capability validation, bounded execution, and Store.Accept
-// Finish.
+// hostAdapter implements the internal/mcp Host seam on Handler. MCP calls the
+// same prepareTurn/runTurn lifecycle as ordinary chat requests.
 type hostAdapter struct{ h *Handler }
 
 func (a hostAdapter) List(ctx context.Context) (map[string]chat.Info, error) {
 	return a.h.projectCatalog(ctx)
 }
 
-func (a hostAdapter) Resolve(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
-	return a.h.resolve(ctx, target)
-}
-
-func (a hostAdapter) Validate(parsed *parsedRequest, info chat.Info) error {
-	return a.h.validateParsed(parsed, info)
-}
-
-func (a hostAdapter) Prepare(ctx context.Context, parsed *parsedRequest) error {
-	return a.h.prepareParsed(ctx, parsed)
-}
-
-func (a hostAdapter) Accept(ctx context.Context, idempotencyKey string, parsed *parsedRequest) (chat.Acceptance, bool, error) {
-	return a.h.acceptContext(ctx, idempotencyKey, parsed)
-}
-
-func (a hostAdapter) Execute(
-	ctx context.Context,
-	parsed parsedRequest,
-	agent chat.Agent,
-	meta *responseMeta,
-	acceptance chat.Acceptance,
-	validateEvent func(chat.Event) error,
-) (chat.Response, error) {
-	return a.h.executeOrdinary(ctx, parsed, agent, meta, acceptance, validateEvent)
+func (a hostAdapter) Run(ctx context.Context, idempotencyKey string, parsed *internalprotocol.ParsedRequest) (chat.Response, error) {
+	return a.h.runTurn(ctx, idempotencyKey, parsed)
 }
 
 func (a hostAdapter) Limits() chat.Limits { return a.h.limits }

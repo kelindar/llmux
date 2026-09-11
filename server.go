@@ -307,7 +307,21 @@ func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) erro
 	if parsed.Turn == nil {
 		parsed.Turn = cloneItems(parsed.Request.Input)
 	}
-	if parsed.Previous != nil {
+	if parsed.Previous != nil && h.store == nil {
+		return chat.Unsupported("previous_response_id", "continuation is not configured")
+	}
+	h.applyStorePolicy(parsed)
+	if parsed.Retain && h.store == nil {
+		return chat.Unsupported("store", "response persistence requires a Store")
+	}
+	return nil
+}
+
+// prepareExecution merges continuation history for catalog agents and resolves
+// media on the effective Request.Input. Request-specific Acceptance.Agent values
+// own input preparation, so Previous does not trigger Store.Load for them.
+func (h *Handler) prepareExecution(ctx context.Context, parsed *parsedRequest, acceptance chat.Acceptance) error {
+	if parsed.Previous != nil && acceptance.Agent == nil {
 		if h.store == nil {
 			return chat.Unsupported("previous_response_id", "continuation is not configured")
 		}
@@ -322,11 +336,7 @@ func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) erro
 		input = append(input, cloneItems(parsed.Turn)...)
 		parsed.Request.Input = input
 	}
-	h.applyStorePolicy(parsed)
-	switch {
-	case parsed.Retain && h.store == nil:
-		return chat.Unsupported("store", "response persistence requires a Store")
-	case h.assets == nil:
+	if h.assets == nil {
 		return nil
 	}
 	count := 0
@@ -336,6 +346,13 @@ func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) erro
 		}
 	}
 	return nil
+}
+
+func executionAgent(catalog chat.Agent, acceptance chat.Acceptance) chat.Agent {
+	if acceptance.Agent != nil {
+		return acceptance.Agent
+	}
+	return catalog
 }
 
 // applyStorePolicy sets Retain from the wire store field and the configured

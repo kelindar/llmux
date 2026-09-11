@@ -35,27 +35,17 @@ const ProtocolVersion = "2026-07-28"
 const toolInputSchema = `{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`
 
 // Host is the execution seam provided by the llmux Handler. It keeps the MCP
-// adapter from duplicating the execution engine, the capability validation,
-// or the lifecycle machinery.
+// adapter from duplicating lifecycle machinery: resolution, validation,
+// acceptance (including CatalogAgent), preparation, execution, and Finish.
 type Host interface {
 	// List returns the caller-visible unified catalog for this request.
 	// Only entries with a nonempty Info.Tool become MCP tools. A nil or empty
 	// result yields an empty tool catalog rather than a hidden failure.
 	List(ctx context.Context) (map[string]chat.Info, error)
-	// Resolve selects an agent and its Info for a target name via Catalog.Load.
-	Resolve(ctx context.Context, target string) (chat.Agent, chat.Info, error)
-	// Validate checks a parsed request against agent Info.
-	Validate(parsed *protocol.ParsedRequest, info chat.Info) error
-	// Prepare completes a parsed request (store policy, media resolution).
-	Prepare(ctx context.Context, parsed *protocol.ParsedRequest) error
-	// Accept applies Store acceptance. Idempotency keys come from the
-	// calling protocol; MCP passes none, so JSON-RPC request IDs are never
-	// idempotency keys.
-	Accept(ctx context.Context, idempotencyKey string, parsed *protocol.ParsedRequest) (chat.Acceptance, bool, error)
-	// Execute runs a fully validated request to completion without streaming
-	// delivery, applying bounded execution and lifecycle Finish exactly once.
-	// The response is persisted before a successful result is returned.
-	Execute(ctx context.Context, parsed protocol.ParsedRequest, agent chat.Agent, meta *protocol.Meta, acceptance chat.Acceptance, validateEvent func(chat.Event) error) (chat.Response, error)
+	// Run executes one canonical non-streaming request through the shared
+	// lifecycle coordinator. Replays return without preparation or execution.
+	// Accepted work that fails preparation is finalized exactly once.
+	Run(ctx context.Context, idempotencyKey string, parsed *protocol.ParsedRequest) (chat.Response, error)
 	// Limits returns the handler request and output limits.
 	Limits() chat.Limits
 	// LogError observes operational failures without exposing them.
@@ -227,9 +217,9 @@ func (t *Transport) callAgentTool(e entry) sdkmcp.ToolHandler {
 	}
 }
 
-// runAgentTool maps one validated tool invocation onto the canonical request
-// path: resolve, validate, prepare, accept, execute. The response returned by
-// Execute has already been finalized through lifecycle Finish.
+// runAgentTool maps one validated tool invocation onto the shared lifecycle
+// coordinator. The returned response is already finalized through Finish when
+// acceptance reserved new work; replays skip preparation and execution.
 func (t *Transport) runAgentTool(ctx context.Context, e entry, message string) (*sdkmcp.CallToolResult, error) {
 	parsed := protocol.ParsedRequest{
 		Request: chat.Request{
@@ -240,51 +230,7 @@ func (t *Transport) runAgentTool(ctx context.Context, e entry, message string) (
 	}
 	parsed.Turn = parsed.Request.Input
 
-	agent, info, err := t.host.Resolve(ctx, e.target)
-	if err != nil {
-		return nil, err
-	}
-	if err := t.host.Validate(&parsed, info); err != nil {
-		return nil, err
-	}
-	if err := t.host.Prepare(ctx, &parsed); err != nil {
-		return nil, err
-	}
-	if err := t.host.Validate(&parsed, info); err != nil {
-		return nil, err
-	}
-	acceptance, _, err := t.host.Accept(ctx, "", &parsed)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := protocol.Meta{
-		Response: protocol.InitialResponse(acceptance.Response, &parsed),
-		Activity: acceptance.Activity,
-	}
-	acceptance.Response = meta.Response
-
-	// Replays skip execution and map the stored response like any other.
-	if acceptance.Replay != nil {
-		return toolResultFromResponse(acceptance.Replay.Clone())
-	}
-
-	validateEvent := func(event chat.Event) error {
-		switch {
-		case protocol.RequiresReasoningSummary(event) && (parsed.Request.Controls.Reasoning == nil || !parsed.Request.Controls.Reasoning.Summary):
-			return chat.Unsupported("reasoning.summary", "reasoning summary output was not requested")
-		case event.Type == chat.EventActivity && !acceptance.Activity:
-			return chat.Unsupported("output", "activity events were not enabled for this request")
-		case event.Type == chat.EventActivity:
-			return nil
-		}
-		if err := protocol.ValidateOutputEvent(event, info); err != nil {
-			return err
-		}
-		return protocol.ValidateRequestedOutput(event, parsed.Request.Output.Modalities)
-	}
-
-	resp, err := t.host.Execute(ctx, parsed, agent, &meta, acceptance, validateEvent)
+	resp, err := t.host.Run(ctx, "", &parsed)
 	if err != nil {
 		return nil, err
 	}

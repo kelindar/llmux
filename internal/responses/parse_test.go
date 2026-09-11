@@ -1142,6 +1142,8 @@ func TestCoverageMore(t *testing.T) {
 			"fileURL":            {`{"model":"gpt-4.1","input":[{"type":"message","role":"user","content":[{"type":"input_file","file_url":"https://example.com/a.txt"}]}]}`, "", ""},
 			"defaultMessageType": {`{"model":"gpt-4.1","input":[{"role":"user","content":"hi"}]}`, "", ""},
 			"messageWithID":      {`{"model":"gpt-4.1","input":[{"type":"message","id":"m1","role":"user","content":"hi"}]}`, "", ""},
+			"messageWithStatus":  {`{"model":"gpt-4.1","input":[{"type":"message","role":"user","status":"completed","content":"hi"}]}`, "", ""},
+			"badMessageStatus":   {`{"model":"gpt-4.1","input":[{"type":"message","role":"user","status":"pending","content":"hi"}]}`, "invalid_request", "input.status"},
 			"developerRole":      {`{"model":"gpt-4.1","input":[{"type":"message","role":"developer","content":"sys"}]}`, "", ""},
 		}
 		for name, tc := range cases {
