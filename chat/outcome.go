@@ -152,3 +152,8 @@ func Invalid(param, message string) *Error {
 func Unsupported(param, message string) *Error {
 	return &Error{Status: 400, Type: "invalid_request_error", Code: "unsupported", Param: param, Message: message}
 }
+
+// NotFound constructs a 404 not_found invalid_request_error for an unknown agent.
+func NotFound() *Error {
+	return &Error{Status: 404, Type: "invalid_request_error", Code: "not_found", Message: "unknown agent"}
+}

@@ -34,17 +34,10 @@ func main() {
 		}
 		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return agent, chat.Info{
-			Continuation: true,
-			Extensions:   map[string]bool{"x-durable": true},
-		}, nil
-	})
-
+	catalog := &agents{echo: agent}
 	mux := http.NewServeMux()
-	handler := llmux.New(resolver,
-		llmux.WithLifecycle(store.Accept),
-		llmux.WithContinuationStore(store),
+	handler := llmux.New(catalog,
+		llmux.WithStore(store),
 		llmux.WithStoreDefault(true),
 	)
 	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
@@ -73,6 +66,30 @@ func main() {
 type turnRecord struct {
 	Response chat.Response
 	Turn     []chat.Item
+}
+
+// agents is the Catalog: List and Load share the same Info metadata.
+type agents struct {
+	echo chat.Agent
+}
+
+func (a *agents) List(context.Context) (map[string]chat.Info, error) {
+	return map[string]chat.Info{
+		"echo": {
+			Continuation: true,
+			Extensions:   map[string]bool{"x-durable": true},
+		},
+	}, nil
+}
+
+func (a *agents) Load(_ context.Context, target string) (chat.Agent, chat.Info, error) {
+	if target != "echo" {
+		return nil, chat.Info{}, chat.NotFound()
+	}
+	return a.echo, chat.Info{
+		Continuation: true,
+		Extensions:   map[string]bool{"x-durable": true},
+	}, nil
 }
 
 type store struct {

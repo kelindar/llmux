@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,33 +18,25 @@ func TestServeHelper(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	handler := llmux.New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return agent, chat.Info{}, nil
-	}))
+	handler := llmux.New(benchCatalog{agent: agent})
 	body := []byte(`{"model":"bench","messages":[{"role":"user","content":"hello"}]}`)
 	recorder := serve(handler, "/chat/completions", body, "")
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
 func TestServeModels(t *testing.T) {
-	handler := llmux.New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
-			return chat.Outcome{}, nil
-		}), chat.Info{}, nil
-	}), llmux.WithCatalog(func(context.Context) (map[string]chat.Info, error) {
-		return map[string]chat.Info{"bench": {}}, nil
-	}))
+	handler := llmux.New(benchCatalog{agent: chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	})})
 	recorder := serve(handler, "/models", nil, "GET")
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
 func TestServeTranscription(t *testing.T) {
-	handler := llmux.New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
-			return chat.Outcome{}, nil
-		}), chat.Info{}, nil
-	}), llmux.WithTranscriber(llmux.TranscriberFunc(func(context.Context, llmux.TranscriptionRequest) (llmux.Transcription, error) {
-		return llmux.Transcription{Text: "ok"}, nil
+	handler := llmux.New(benchCatalog{agent: chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, nil
+	})}, llmux.WithTranscriber(audio.TranscriberFunc(func(context.Context, audio.TranscriptionRequest) (audio.Transcription, error) {
+		return audio.Transcription{Text: "ok"}, nil
 	})))
 	recorder := serveTranscription(handler)
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -53,11 +46,10 @@ func TestMainPackageBuild(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/chat/completions", bytes.NewReader([]byte(`{"model":"bench","messages":[{"role":"user","content":"hello"}]}`)))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
-	handler := llmux.New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-			return chat.Outcome{}, emit(chat.Text("ok"))
-		}), chat.Info{}, nil
-	}))
+	handler := llmux.New(benchCatalog{agent: chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("ok"))
+	})})
 	handler.ServeHTTP(recorder, request)
-	assert.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "ok")
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/mcp"
 )
@@ -20,31 +21,23 @@ type Option func(*Handler)
 // Handler exposes configured agents through standard HTTP endpoints. It does
 // not create a listener and is safe for concurrent requests.
 type Handler struct {
-	resolver     chat.Resolver
 	catalog      Catalog
+	store        Store
 	mcpEnabled   bool
 	mcp          *mcp.Transport
 	limits       chat.Limits
 	assets       chat.AssetResolver
-	continuation chat.ContinuationStore
-	lifecycle    chat.Lifecycle
 	storeDefault bool
-	transcriber  Transcriber
-	speaker      Speaker
+	transcriber  audio.Transcriber
+	speaker      audio.Speaker
 	errorLog     func(context.Context, error)
 }
 
-// Catalog returns the caller-visible unified agent catalog: resolver targets
-// mapped to their Info. It runs once per catalog-backed request (GET /models
-// and, when enabled, /mcp) with the request context, so authorization belongs
-// inside the callback. Keys are the targets accepted by the Resolver; listing
-// visibility never replaces the Resolver's invocation authorization. llmux
-// reads the returned map and never mutates it or its values.
-type Catalog func(context.Context) (map[string]chat.Info, error)
-
-// New builds a Handler with the given resolver and options.
-func New(resolver chat.Resolver, options ...Option) *Handler {
-	h := &Handler{resolver: resolver, limits: chat.DefaultLimits()}
+// New builds a Handler with the given catalog and options. A nil catalog is
+// allowed: GET /models and MCP discovery project empty catalogs, and Load
+// fails with a clear operational error. Store is optional via WithStore.
+func New(catalog Catalog, options ...Option) *Handler {
+	h := &Handler{catalog: catalog, limits: chat.DefaultLimits()}
 	for _, option := range options {
 		if option != nil {
 			option(h)
@@ -52,18 +45,12 @@ func New(resolver chat.Resolver, options ...Option) *Handler {
 	}
 	h.limits = h.limits.Normalize()
 	// Dependent components are initialized after all options are applied so
-	// option ordering never matters. MCP enabled without a catalog projects
+	// option ordering never matters. MCP enabled with a nil catalog projects
 	// an empty tool catalog.
 	if h.mcpEnabled {
-		h.mcp = mcp.NewTransport(hostAdapter{h: h}, mcp.Config{Catalog: mcp.Catalog(h.catalog)})
+		h.mcp = mcp.NewTransport(hostAdapter{h: h})
 	}
 	return h
-}
-
-// WithCatalog registers the authenticated catalog callback shared by
-// GET /models and (when enabled) /mcp. See Catalog.
-func WithCatalog(list Catalog) Option {
-	return func(h *Handler) { h.catalog = list }
 }
 
 // WithLimits sets request, media, and output size limits for the handler.
@@ -74,34 +61,28 @@ func WithAssetResolver(resolver chat.AssetResolver) Option {
 	return func(h *Handler) { h.assets = resolver }
 }
 
-// WithContinuationStore enables previous_response_id history loading.
-// Persistence of new turns is owned by Lifecycle.
-func WithContinuationStore(store chat.ContinuationStore) Option {
-	return func(h *Handler) { h.continuation = store }
-}
-
-// WithLifecycle enables application-owned response identity, idempotent
-// acceptance, and terminal persistence via Acceptance.Finish.
-// Pass a Lifecycle function such as store.Accept.
-func WithLifecycle(life chat.Lifecycle) Option {
-	return func(h *Handler) { h.lifecycle = life }
+// WithStore enables continuation loading and response lifecycle acceptance.
+// Merely supplying a Store does not change retention defaults; see
+// WithStoreDefault. Applications without persistence omit this option.
+func WithStore(store Store) Option {
+	return func(h *Handler) { h.store = store }
 }
 
 // WithStoreDefault sets the content-retention policy when the request omits
 // store. The zero option default is false (current behavior). Explicit
 // store:true or store:false always overrides this default. Effective
-// retention (Retain) requires a configured Lifecycle.
+// retention (Retain) requires a configured Store.
 func WithStoreDefault(retain bool) Option {
 	return func(h *Handler) { h.storeDefault = retain }
 }
 
 // WithTranscriber enables POST /audio/transcriptions.
-func WithTranscriber(transcriber Transcriber) Option {
+func WithTranscriber(transcriber audio.Transcriber) Option {
 	return func(h *Handler) { h.transcriber = transcriber }
 }
 
 // WithSpeaker enables POST /audio/speech.
-func WithSpeaker(speaker Speaker) Option { return func(h *Handler) { h.speaker = speaker } }
+func WithSpeaker(speaker audio.Speaker) Option { return func(h *Handler) { h.speaker = speaker } }
 
 // WithErrorLog lets an application observe operational failures without
 // exposing raw backend or prompt data to clients. The hook is not called for
@@ -199,13 +180,13 @@ func (h *Handler) serveModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // projectCatalog fetches the caller-visible catalog for one request. A nil
-// catalog callback projects an empty catalog; catalog failures are returned
-// as operational errors and never exposed.
+// catalog projects an empty catalog; catalog failures are returned as
+// operational errors and never exposed.
 func (h *Handler) projectCatalog(ctx context.Context) (map[string]chat.Info, error) {
 	if h.catalog == nil {
 		return nil, nil
 	}
-	return h.catalog(ctx)
+	return h.catalog.List(ctx)
 }
 
 func (h *Handler) readBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
@@ -298,15 +279,15 @@ func fmtError(param, message string, err error) *chat.Error {
 }
 
 func (h *Handler) resolve(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
-	if h.resolver == nil {
-		return nil, chat.Info{}, errors.New("llmux: no agent resolver configured")
+	if h.catalog == nil {
+		return nil, chat.Info{}, errors.New("llmux: no catalog configured")
 	}
-	agent, info, err := h.resolver(ctx, target)
+	agent, info, err := h.catalog.Load(ctx, target)
 	switch {
 	case err != nil:
 		return nil, chat.Info{}, err
 	case agent == nil:
-		return nil, chat.Info{}, errors.New("llmux: resolver returned a nil agent")
+		return nil, chat.Info{}, errors.New("llmux: catalog returned a nil agent")
 	}
 	return agent, info.Normalize(), nil
 }
@@ -316,10 +297,10 @@ func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) erro
 		parsed.Turn = cloneItems(parsed.Request.Input)
 	}
 	if parsed.Previous != nil {
-		if h.continuation == nil {
+		if h.store == nil {
 			return chat.Unsupported("previous_response_id", "continuation is not configured")
 		}
-		prior, err := h.continuation.Load(ctx, *parsed.Previous)
+		prior, err := h.store.Load(ctx, *parsed.Previous)
 		if err != nil {
 			return &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "previous_response_not_found", Param: "previous_response_id", Message: "previous response was not found", Err: err}
 		}
@@ -332,8 +313,8 @@ func (h *Handler) prepareParsed(ctx context.Context, parsed *parsedRequest) erro
 	}
 	h.applyStorePolicy(parsed)
 	switch {
-	case parsed.Retain && h.lifecycle == nil:
-		return chat.Unsupported("store", "response persistence requires a Lifecycle")
+	case parsed.Retain && h.store == nil:
+		return chat.Unsupported("store", "response persistence requires a Store")
 	case h.assets == nil:
 		return nil
 	}
@@ -388,11 +369,10 @@ func (h *Handler) resolveItemMedia(ctx context.Context, item *chat.Item, count *
 
 func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Info) error {
 	req := &parsed.Request
-	if strings.TrimSpace(req.Target) == "" {
-		return chat.Invalid("model", "model is required")
-	}
 	caps = caps.Normalize()
 	switch {
+	case strings.TrimSpace(req.Target) == "":
+		return chat.Invalid("model", "model is required")
 	case req.Controls.MaxOutputTokens != nil && !caps.GenerationControls.Has(chat.ControlMaxOutputTokens):
 		return chat.Unsupported("max_output_tokens", "selected agent does not support max output tokens")
 	case req.Controls.Temperature != nil && !caps.GenerationControls.Has(chat.ControlTemperature):

@@ -5,41 +5,7 @@ import (
 	"time"
 )
 
-// ContinuationStore loads prior-turn history for previous_response_id.
-// Persistence of new turns is owned by Lifecycle, not this interface.
-type ContinuationStore interface {
-	// Load returns history items that should precede the current Turn.
-	// The application authorizes access and validates target ownership.
-	Load(context.Context, string) ([]Item, error)
-}
-
-// Lifecycle accepts one request and returns per-request acceptance state.
-// Finish (when set) finalizes that request. Agent remains the sole execution
-// owner — Lifecycle does not run the agent.
-//
-// Pass a method value to llmux.WithLifecycle, for example store.Accept.
-//
-// Ordering:
-//  1. Validate request, resolve store policy, load continuation.
-//  2. Accept — reserve identity, reject conflicts, or return Replay.
-//     Capture request-local resources on Acceptance.Finish.
-//  3. Agent.Run (skipped on Replay). RunTimeout > 0 detaches client cancel
-//     and bounds execution; llmux owns that context and cancels it on exit.
-//  4. Finish exactly once for accepted executions, with the execution
-//     context. That context may already be cancelled. Finish owns any
-//     detached, bounded cleanup work (for example
-//     context.WithTimeout(context.WithoutCancel(ctx), timeout)).
-//     Not called for Accept errors, completed Replays, or when Finish is nil.
-//     Treat the Response as read-only: nested data is shared with the
-//     response encoded after Finish returns. Call Response.Clone() before
-//     retaining or modifying it.
-//  5. Advertise success only after Finish succeeds.
-//
-// Activity: set Acceptance.Activity and emit Activity(name, json). Keep
-// application-specific fields outside standard envelopes.
-type Lifecycle func(context.Context, *TurnRequest) (Acceptance, error)
-
-// TurnRequest is the input to Lifecycle.
+// TurnRequest is the input to Store.Accept (configured via llmux.WithStore).
 //
 // Request is the canonical execution request (read-only). Turn is the items
 // submitted in this HTTP request only and is distinguishable from
@@ -56,7 +22,7 @@ type TurnRequest struct {
 	Stream         bool              // Whether the client requested streaming.
 }
 
-// Acceptance is the per-request result of Lifecycle.
+// Acceptance is the per-request result of Store.Accept.
 //
 // For new work, Response carries identity (ID/Created; empty uses library
 // defaults). For replay, Replay holds the complete stored Response and Run is

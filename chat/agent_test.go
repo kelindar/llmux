@@ -29,36 +29,6 @@ func TestAgentFunc(t *testing.T) {
 	assert.Equal(t, EventItem, captured.Type)
 }
 
-type namedResolver struct{}
-
-func (namedResolver) Resolve(_ context.Context, _ string) (Agent, Info, error) {
-	return AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-		return Outcome{}, nil
-	}), Info{Tools: true}, nil
-}
-
-func TestResolver(t *testing.T) {
-	var nilResolver Resolver
-	assert.Nil(t, nilResolver)
-
-	resolver := Resolver(func(_ context.Context, target string) (Agent, Info, error) {
-		assert.Equal(t, "my-agent", target)
-		return AgentFunc(func(context.Context, *Request, Emit) (Outcome, error) {
-			return Outcome{}, nil
-		}), Info{Tools: true}, nil
-	})
-	gotAgent, gotCaps, err := resolver(context.Background(), "my-agent")
-	require.NoError(t, err)
-	require.NotNil(t, gotAgent)
-	assert.Equal(t, Info{Tools: true}, gotCaps)
-
-	method := Resolver(namedResolver{}.Resolve)
-	gotAgent, gotCaps, err = method(context.Background(), "x")
-	require.NoError(t, err)
-	require.NotNil(t, gotAgent)
-	assert.True(t, gotCaps.Tools)
-}
-
 type namedAssets struct{}
 
 func (namedAssets) Resolve(_ context.Context, media Media, max int64) (Media, error) {

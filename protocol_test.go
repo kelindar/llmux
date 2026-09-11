@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 
 	internalexecution "github.com/kelindar/llmux/internal/execution"
@@ -108,6 +109,10 @@ func (s *testContinuationStore) Load(_ context.Context, id string) ([]chat.Item,
 	return cloned, nil
 }
 
+func (s *testContinuationStore) Accept(context.Context, *chat.TurnRequest) (chat.Acceptance, error) {
+	return chat.Acceptance{}, nil
+}
+
 func (s *testContinuationStore) put(id string, items []chat.Item) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,6 +135,13 @@ type testLifecycle struct {
 	finals  int
 	accepts int
 	last    *savedFinish
+}
+
+func (l *testLifecycle) Load(ctx context.Context, id string) ([]chat.Item, error) {
+	if l.store == nil {
+		return nil, errors.New("missing continuation")
+	}
+	return l.store.Load(ctx, id)
 }
 
 func (l *testLifecycle) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
@@ -179,7 +191,7 @@ func TestContinuation(t *testing.T) {
 	agent := chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text(strconv.Itoa(len(req.Input))))
 	})
-	handler := testHandler(agent, chat.Info{Continuation: true}, WithContinuationStore(store), WithLifecycle(life.Accept))
+	handler := testHandler(agent, chat.Info{Continuation: true}, WithStore(life))
 
 	first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"first"}`, nil)
 	require.Equal(t, http.StatusOK, first.Code)
@@ -246,8 +258,8 @@ func TestJSONV2Duplicates(t *testing.T) {
 func TestMultipartMalformed(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
-		return Transcription{}, nil
+	}), chat.Info{}, WithTranscriber(audio.TranscriberFunc(func(context.Context, audio.TranscriptionRequest) (audio.Transcription, error) {
+		return audio.Transcription{}, nil
 	})))
 	recorder := postRaw(t, handler, "/audio/transcriptions", []byte("--broken\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\nx"), "multipart/form-data; boundary=broken", nil)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
@@ -257,8 +269,8 @@ func TestMultipartMalformed(t *testing.T) {
 func TestSpeechSSE(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Info{}, WithSpeaker(SpeakerFunc(func(context.Context, SpeechRequest) (Speech, error) {
-		return Speech{Data: []byte{1, 2, 3}, Format: "wav"}, nil
+	}), chat.Info{}, WithSpeaker(audio.SpeakerFunc(func(context.Context, audio.SpeechRequest) (audio.Speech, error) {
+		return audio.Speech{Data: []byte{1, 2, 3}, Format: "wav"}, nil
 	})))
 	recorder := postJSON(t, handler, "/audio/speech", `{"model":"tts","input":"say hi","voice":"alloy","response_format":"wav","stream_format":"sse"}`, nil)
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -276,9 +288,9 @@ func TestSpeechSSE(t *testing.T) {
 func TestVerboseTranscription(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
+	}), chat.Info{}, WithTranscriber(audio.TranscriberFunc(func(_ context.Context, req audio.TranscriptionRequest) (audio.Transcription, error) {
 		assert.Equal(t, "sample.wav", req.Filename)
-		return Transcription{Text: "hello", Language: "en", Duration: 1.5, Segments: []TranscriptSegment{{ID: 0, Start: 0, End: 1.5, Text: "hello"}}}, nil
+		return audio.Transcription{Text: "hello", Language: "en", Duration: 1.5, Segments: []audio.TranscriptSegment{{ID: 0, Start: 0, End: 1.5, Text: "hello"}}}, nil
 	})))
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -358,8 +370,8 @@ func TestOutcomeDefaults(t *testing.T) {
 func TestMultipartSizeLimit(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("unreachable"))
-	}), chat.Info{}, WithTranscriber(TranscriberFunc(func(context.Context, TranscriptionRequest) (Transcription, error) {
-		return Transcription{}, nil
+	}), chat.Info{}, WithTranscriber(audio.TranscriberFunc(func(context.Context, audio.TranscriptionRequest) (audio.Transcription, error) {
+		return audio.Transcription{}, nil
 	})), WithLimits(chat.Limits{MaxMultipartBytes: 32}))
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -468,7 +480,7 @@ func TestFinalizeError(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	}), chat.Info{Continuation: true},
-		WithLifecycle(life.Accept),
+		WithStore(life),
 		WithErrorLog(func(_ context.Context, err error) { logged = err }),
 	)
 	recorder := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"first"}`, nil)

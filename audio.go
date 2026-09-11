@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 	internalwire "github.com/kelindar/llmux/internal/wire"
 )
@@ -59,11 +60,11 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, h.limits.MaxMediaBytes+1))
-	if err != nil {
+	switch {
+	case err != nil:
 		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "file_read_failed", Param: "file", Message: "could not read audio file", Err: err})
 		return
-	}
-	if int64(len(data)) > h.limits.MaxMediaBytes {
+	case int64(len(data)) > h.limits.MaxMediaBytes:
 		writeProtocolError(w, protocolChat, &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "media_too_large", Param: "file", Message: "audio file exceeds the configured media limit"})
 		return
 	}
@@ -79,15 +80,15 @@ func (h *Handler) serveTranscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	temperature, err := parseFormFloat(r, "temperature")
-	if err != nil {
+	switch {
+	case err != nil:
 		writeProtocolError(w, protocolChat, err)
 		return
-	}
-	if temperature != nil && (*temperature < 0 || *temperature > 1) {
+	case temperature != nil && (*temperature < 0 || *temperature > 1):
 		writeProtocolError(w, protocolChat, chat.Invalid("temperature", "temperature must be between 0 and 1"))
 		return
 	}
-	request := TranscriptionRequest{
+	request := audio.TranscriptionRequest{
 		Model:          model,
 		Filename:       header.Filename,
 		MIMEType:       header.Header.Get("Content-Type"),
@@ -225,63 +226,63 @@ func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func parseSpeechRequest(object map[string]jsontext.Value) (SpeechRequest, error) {
+func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, error) {
 	allowed := map[string]bool{
 		"model": true, "input": true, "voice": true, "instructions": true,
 		"response_format": true, "speed": true, "stream_format": true,
 	}
 	if err := internalwire.RejectUnknownStrict(object, allowed); err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	}
 	model, err := internalwire.RequireString(object, "model")
 	if err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	}
 	input, err := internalwire.RequireString(object, "input")
 	if err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	}
 	if utf8.RuneCountInString(input) > 4096 {
-		return SpeechRequest{}, chat.Invalid("input", "input exceeds the 4096 character limit")
+		return audio.SpeechRequest{}, chat.Invalid("input", "input exceeds the 4096 character limit")
 	}
 	voice, err := parseSpeechVoice(object["voice"])
 	if err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	}
 	if voice == "" {
-		return SpeechRequest{}, chat.Invalid("voice", "voice is required")
+		return audio.SpeechRequest{}, chat.Invalid("voice", "voice is required")
 	}
-	request := SpeechRequest{Model: model, Input: input, Voice: voice, Speed: 1, ResponseFormat: "mp3", StreamFormat: "audio"}
+	request := audio.SpeechRequest{Model: model, Input: input, Voice: voice, Speed: 1, ResponseFormat: "mp3", StreamFormat: "audio"}
 	if value, ok, err := decodeString(object, "instructions"); err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	} else if ok {
 		request.Instructions = value
 	}
 	if value, ok, err := decodeString(object, "response_format"); err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	} else if ok {
 		request.ResponseFormat = strings.ToLower(value)
 	}
 	if !validSpeechFormat(request.ResponseFormat) {
-		return SpeechRequest{}, chat.Unsupported("response_format", "supported formats are mp3, opus, aac, flac, wav, and pcm")
+		return audio.SpeechRequest{}, chat.Unsupported("response_format", "supported formats are mp3, opus, aac, flac, wav, and pcm")
 	}
 	if value, err := decodeFloat(object, "speed"); err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	} else if value != nil {
 		if *value < 0.25 || *value > 4 {
-			return SpeechRequest{}, chat.Invalid("speed", "speed must be between 0.25 and 4")
+			return audio.SpeechRequest{}, chat.Invalid("speed", "speed must be between 0.25 and 4")
 		}
 		request.Speed = *value
 	}
 	if value, ok, err := decodeString(object, "stream_format"); err != nil {
-		return SpeechRequest{}, err
+		return audio.SpeechRequest{}, err
 	} else if ok {
 		request.StreamFormat = strings.ToLower(value)
 	}
 	switch request.StreamFormat {
 	case "audio", "sse":
 	default:
-		return SpeechRequest{}, chat.Unsupported("stream_format", "supported stream formats are audio and sse")
+		return audio.SpeechRequest{}, chat.Unsupported("stream_format", "supported stream formats are audio and sse")
 	}
 	return request, nil
 }
@@ -332,7 +333,7 @@ func speechMIME(format string) string {
 	}
 }
 
-func writeSpeechStream(r *http.Request, speech Speech, stream *sseWriter) error {
+func writeSpeechStream(r *http.Request, speech audio.Speech, stream *sseWriter) error {
 	chunkSize := 3072
 	for offset := 0; offset < len(speech.Data); offset += chunkSize {
 		end := min(offset+chunkSize, len(speech.Data))

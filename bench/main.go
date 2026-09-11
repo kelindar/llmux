@@ -12,6 +12,7 @@ import (
 
 	"github.com/kelindar/bench"
 	"github.com/kelindar/llmux"
+	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/anthropic"
 	completions "github.com/kelindar/llmux/internal/completions"
@@ -21,6 +22,18 @@ import (
 )
 
 var keep any
+
+type benchCatalog struct {
+	agent chat.Agent
+}
+
+func (c benchCatalog) List(context.Context) (map[string]chat.Info, error) {
+	return map[string]chat.Info{"bench": {}}, nil
+}
+
+func (c benchCatalog) Load(context.Context, string) (chat.Agent, chat.Info, error) {
+	return c.agent, chat.Info{}, nil
+}
 
 func main() {
 	chatBody := []byte(`{"model":"bench","messages":[{"role":"user","content":"hello"}]}`)
@@ -43,18 +56,12 @@ func main() {
 	agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return agent, chat.Info{}, nil
-	})
-	handler := llmux.New(resolver,
-		llmux.WithCatalog(func(context.Context) (map[string]chat.Info, error) {
-			return map[string]chat.Info{"bench": {}}, nil
-		}),
-		llmux.WithTranscriber(llmux.TranscriberFunc(func(context.Context, llmux.TranscriptionRequest) (llmux.Transcription, error) {
-			return llmux.Transcription{Text: "ok"}, nil
+	handler := llmux.New(benchCatalog{agent: agent},
+		llmux.WithTranscriber(audio.TranscriberFunc(func(context.Context, audio.TranscriptionRequest) (audio.Transcription, error) {
+			return audio.Transcription{Text: "ok"}, nil
 		})),
-		llmux.WithSpeaker(llmux.SpeakerFunc(func(context.Context, llmux.SpeechRequest) (llmux.Speech, error) {
-			return llmux.Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
+		llmux.WithSpeaker(audio.SpeakerFunc(func(context.Context, audio.SpeechRequest) (audio.Speech, error) {
+			return audio.Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
 		})),
 	)
 

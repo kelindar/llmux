@@ -74,6 +74,11 @@ func TestAPIError(t *testing.T) {
 
 	unsupported := Unsupported("p", "msg")
 	assert.Equal(t, "unsupported", unsupported.Code)
+
+	notFound := NotFound()
+	assert.Equal(t, 404, notFound.Status)
+	assert.Equal(t, "not_found", notFound.Code)
+	assert.Equal(t, "unknown agent", notFound.Message)
 }
 
 func TestResponseClone(t *testing.T) {

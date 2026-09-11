@@ -15,9 +15,8 @@ const mcpProtocolVersion = mcp.ProtocolVersion
 
 // WithMCP enables the optional MCP endpoint at the exact path /mcp (over
 // stateless Streamable HTTP). It takes no arguments: the exposed tools come
-// from the unified catalog configured with WithCatalog, filtered to entries
-// whose Info.Tool is nonempty. Enabling MCP without a catalog yields an
-// empty tool catalog, never implicit enumeration.
+// from Catalog.List, filtered to entries whose Info.Tool is nonempty. A nil
+// catalog yields an empty tool catalog, never implicit enumeration.
 //
 // The transport is constructed after all options are applied, so option
 // ordering does not matter.
@@ -31,10 +30,14 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 // hostAdapter implements the internal/mcp execution seam on Handler. It
-// reuses the exact machinery behind the chat endpoints: resolver-based
-// authorization, capability validation, bounded execution, and lifecycle
+// reuses the exact machinery behind the chat endpoints: Catalog.Load
+// authorization, capability validation, bounded execution, and Store.Accept
 // Finish.
 type hostAdapter struct{ h *Handler }
+
+func (a hostAdapter) List(ctx context.Context) (map[string]chat.Info, error) {
+	return a.h.projectCatalog(ctx)
+}
 
 func (a hostAdapter) Resolve(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
 	return a.h.resolve(ctx, target)

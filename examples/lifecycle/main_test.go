@@ -15,18 +15,17 @@ import (
 
 func TestLifecycleMinimal(t *testing.T) {
 	store := &store{byID: make(map[string]saved)}
-	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-		return chat.Outcome{}, emit.Text("hello")
-	})
-	handler := llmux.New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-			return agent, chat.Info{Continuation: true}, nil
+	catalog := &agents{
+		echo: chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, emit.Text("hello")
 		}),
-		llmux.WithLifecycle(store.Accept),
+	}
+	handler := llmux.New(catalog,
+		llmux.WithStore(store),
 		llmux.WithStoreDefault(true),
 	)
 
-	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"agent/basic","store":true,"input":"hi"}`))
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"echo","store":true,"input":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -37,7 +36,7 @@ func TestLifecycleMinimal(t *testing.T) {
 	defer store.mu.Unlock()
 	require.Len(t, store.byID, 1)
 	for _, got := range store.byID {
-		assert.Equal(t, "agent/basic", got.Response.Target)
+		assert.Equal(t, "echo", got.Response.Target)
 		require.Len(t, got.Turn, 1)
 		require.NotEmpty(t, got.Response.Output)
 		assert.Equal(t, "hello", got.Response.Output[0].Content[0].Text)

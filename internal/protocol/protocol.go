@@ -104,10 +104,10 @@ func (s *SSEWriter) Start() error {
 // Write marshals value as one SSE data frame, optionally prefixed with event.
 func (s *SSEWriter) Write(event string, value any) error {
 	data, err := json.Marshal(value)
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
-	}
-	if int64(len(data)) > s.limits.MaxEventBytes {
+	case int64(len(data)) > s.limits.MaxEventBytes:
 		return &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "event_too_large", Message: "stream event exceeds the configured limit"}
 	}
 	if err := s.Start(); err != nil {

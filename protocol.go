@@ -186,14 +186,14 @@ func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Accep
 	return h.acceptContext(r.Context(), r.Header.Get("Idempotency-Key"), parsed)
 }
 
-// acceptContext applies Lifecycle for one canonical request. Idempotency keys
+// acceptContext applies Store.Accept for one canonical request. Idempotency keys
 // come from the calling protocol: the Idempotency-Key header for chat
 // endpoints and none for MCP tool calls.
 func (h *Handler) acceptContext(ctx context.Context, idempotencyKey string, parsed *parsedRequest) (chat.Acceptance, bool, error) {
-	if h.lifecycle == nil {
+	if h.store == nil {
 		return chat.Acceptance{}, false, nil
 	}
-	accepted, err := h.lifecycle(ctx, &chat.TurnRequest{
+	accepted, err := h.store.Accept(ctx, &chat.TurnRequest{
 		Request:        &parsed.Request,
 		Turn:           parsed.Turn,
 		Previous:       parsed.Previous,

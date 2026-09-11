@@ -17,6 +17,7 @@ import (
 
 	"time"
 
+	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -394,11 +395,34 @@ type sseRecord struct {
 	Data  string
 }
 
+// fixedCatalog is a test Catalog with independent List and Load behavior.
+type fixedCatalog struct {
+	agent   chat.Agent
+	info    chat.Info
+	entries map[string]chat.Info
+	listFn  func(context.Context) (map[string]chat.Info, error)
+	loadFn  func(context.Context, string) (chat.Agent, chat.Info, error)
+}
+
+func (c *fixedCatalog) List(ctx context.Context) (map[string]chat.Info, error) {
+	if c.listFn != nil {
+		return c.listFn(ctx)
+	}
+	if c.entries != nil {
+		return c.entries, nil
+	}
+	return map[string]chat.Info{}, nil
+}
+
+func (c *fixedCatalog) Load(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
+	if c.loadFn != nil {
+		return c.loadFn(ctx, target)
+	}
+	return c.agent, c.info, nil
+}
+
 func testHandler(agent chat.Agent, caps chat.Info, options ...Option) *Handler {
-	resolver := chat.Resolver(func(_ context.Context, target string) (chat.Agent, chat.Info, error) {
-		return agent, caps, nil
-	})
-	return New(resolver, options...)
+	return New(&fixedCatalog{agent: agent, info: caps}, options...)
 }
 
 func postJSON(t *testing.T, handler http.Handler, path string, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -598,19 +622,17 @@ func TestAnthropicStream(t *testing.T) {
 
 func TestOpenAIAudio(t *testing.T) {
 	server := httptest.NewServer(http.StripPrefix("/v1", New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-			return chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-				return chat.Outcome{}, emit(chat.Text("unused"))
-			}), chat.Info{}, nil
-		}),
-		WithTranscriber(TranscriberFunc(func(_ context.Context, req TranscriptionRequest) (Transcription, error) {
+		&fixedCatalog{agent: chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, emit(chat.Text("unused"))
+		})},
+		WithTranscriber(audio.TranscriberFunc(func(_ context.Context, req audio.TranscriptionRequest) (audio.Transcription, error) {
 			assert.Equal(t, "gpt-4o-transcribe", req.Model)
 			assert.Equal(t, []byte("audio"), req.Data)
-			return Transcription{Text: "hello"}, nil
+			return audio.Transcription{Text: "hello"}, nil
 		})),
-		WithSpeaker(SpeakerFunc(func(_ context.Context, req SpeechRequest) (Speech, error) {
+		WithSpeaker(audio.SpeakerFunc(func(_ context.Context, req audio.SpeechRequest) (audio.Speech, error) {
 			assert.Equal(t, "say hello", req.Input)
-			return Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
+			return audio.Speech{Data: []byte("audio"), MIMEType: "audio/mpeg"}, nil
 		})),
 	)))
 	defer server.Close()
@@ -638,16 +660,15 @@ func TestOpenAIAudio(t *testing.T) {
 }
 
 func TestModelsList(t *testing.T) {
-	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
-			return chat.Outcome{}, nil
-		}), chat.Info{}, nil
-	}), WithCatalog(func(context.Context) (map[string]chat.Info, error) {
-		return map[string]chat.Info{
+	handler := New(&fixedCatalog{
+		entries: map[string]chat.Info{
 			"agent/other": {},
 			"agent/basic": {Created: 42, OwnedBy: "test"},
-		}, nil
-	}))
+		},
+		agent: chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}),
+	})
 	req := httptest.NewRequest(http.MethodGet, "/models", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
@@ -668,11 +689,7 @@ func TestModelsList(t *testing.T) {
 }
 
 func TestModelsEmpty(t *testing.T) {
-	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
-			return chat.Outcome{}, nil
-		}), chat.Info{}, nil
-	}))
+	handler := New(nil)
 	req := httptest.NewRequest(http.MethodGet, "/models", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
@@ -723,20 +740,20 @@ func TestResolveErrors(t *testing.T) {
 		require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	})
 
-	t.Run("resolver error", func(t *testing.T) {
+	t.Run("load error", func(t *testing.T) {
 		var logged error
-		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		handler := New(&fixedCatalog{loadFn: func(context.Context, string) (chat.Agent, chat.Info, error) {
 			return nil, chat.Info{}, errors.New("lookup failed")
-		}), WithErrorLog(func(_ context.Context, err error) { logged = err }))
+		}}, WithErrorLog(func(_ context.Context, err error) { logged = err }))
 		recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 		require.Equal(t, http.StatusInternalServerError, recorder.Code)
 		require.Error(t, logged)
 	})
 
 	t.Run("nil agent", func(t *testing.T) {
-		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		handler := New(&fixedCatalog{loadFn: func(context.Context, string) (chat.Agent, chat.Info, error) {
 			return nil, chat.Info{}, nil
-		}))
+		}})
 		recorder := postJSON(t, handler, "/chat/completions", `{"model":"agent/basic","messages":[{"role":"user","content":"hi"}]}`, nil)
 		require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	})
@@ -875,7 +892,7 @@ func TestDecodeHelpers(t *testing.T) {
 func TestContinuationMissingStore(t *testing.T) {
 	handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, nil
-	}), chat.Info{Continuation: true}, WithContinuationStore(&testContinuationStore{items: make(map[string][]chat.Item)}))
+	}), chat.Info{Continuation: true}, WithStore(&testContinuationStore{items: make(map[string][]chat.Item)}))
 	recorder := postJSON(t, handler, "/responses", `{"model":"agent/basic","previous_response_id":"resp_missing","input":"hi"}`, nil)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }

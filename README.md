@@ -26,20 +26,31 @@ import (
 	"github.com/kelindar/llmux/chat"
 )
 
-agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
-	return chat.Outcome{}, emit.Text("hello")
-})
+type agents struct {
+	echo chat.Agent
+}
 
-resolver := chat.Resolver(func(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
-	return agent, chat.Info{}, nil
-})
+func (a *agents) List(context.Context) (map[string]chat.Info, error) {
+	return map[string]chat.Info{"echo": {}}, nil
+}
+
+func (a *agents) Load(_ context.Context, target string) (chat.Agent, chat.Info, error) {
+	if target != "echo" {
+		return nil, chat.Info{}, chat.NotFound()
+	}
+	return a.echo, chat.Info{}, nil
+}
 
 mux := http.NewServeMux()
-mux.Handle("/v1/", http.StripPrefix("/v1", llmux.New(resolver)))
+mux.Handle("/v1/", http.StripPrefix("/v1", llmux.New(&agents{
+	echo: chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit.Text("hello")
+	}),
+})))
 http.ListenAndServe(":8080", mux)
 ```
 
-Mount `llmux.New(resolver)` in an existing `net/http` server to retain the
+Mount `llmux.New(catalog)` in an existing `net/http` server to retain the
 application's authentication middleware and request context. The constructor
 does not open a listener.
 
@@ -64,11 +75,12 @@ type Emit func(Event) error
 ```
 
 These types live in `github.com/kelindar/llmux/chat`. The root `llmux`
-package provides the HTTP handler, options, routing, and thin audio service
-aliases used by `WithTranscriber` / `WithSpeaker`.
+package provides the HTTP handler, options, and routing. Audio services are
+configured with `WithTranscriber` / `WithSpeaker` using types from
+`github.com/kelindar/llmux/audio`.
 
 The handler owns protocol indexes, event completion, and response envelopes.
-By default it also assigns response IDs. With `Lifecycle`, the application
+By default it also assigns response IDs. With a `Store`, the application
 supplies identity and persistence; see below.
 
 ## Endpoints
@@ -81,7 +93,7 @@ The handler matches exact paths. Mount it under a prefix with
 | `POST /chat/completions` | OpenAI Chat Completions | Text, image/file/audio input, text/audio output, client function calls, structured output, serial streaming |
 | `POST /responses` | Open Responses with an OpenAI Responses compatibility profile | Text/image/file/function/reasoning input, text/function/reasoning/generated-image output, typed OpenAI-style streaming |
 | `POST /messages` | Anthropic Messages | Text/image/document/file input, tool use/results, Anthropic message streaming |
-| `GET /models` | OpenAI model catalog shape | Projects `WithCatalog` keys as model IDs; an empty list is returned without a catalog |
+| `GET /models` | OpenAI model catalog shape | Projects `Catalog.List` keys as model IDs; an empty list when Catalog is nil or List is empty |
 | `POST /audio/transcriptions` | OpenAI-compatible audio transcription | Enabled only with `WithTranscriber` |
 | `POST /audio/speech` | OpenAI-compatible speech | Enabled only with `WithSpeaker`; binary audio or typed audio SSE |
 | `POST /mcp` | MCP stateless Streamable HTTP | Enabled only with `WithMCP`; see "MCP endpoint" below |
@@ -127,28 +139,31 @@ controls. `Description` is the single human-readable summary: llmux surfaces
 it as the MCP tool description when `Tool` is nonempty. `Tool` is the stable
 public MCP tool name (1–128 characters from `[A-Za-z0-9._-]`); empty means
 the agent is listed only in `/models`, never derived by sanitizing the
-resolver target. `Created` and `OwnedBy` flow into the `/models` envelope.
+Load target. `Created` and `OwnedBy` flow into the `/models` envelope.
 Info checks cover wire support, the selected agent, and configured services.
 `ClientTools` is required before a canonical function call can be handed to
 a client. Tools used internally by an agent never become client tool calls
 automatically.
 
-Continuation is application-owned. Configure `WithContinuationStore` to load
-history for Responses `previous_response_id`. Persistence of new turns is
-owned by `Lifecycle` (`WithLifecycle`), not the continuation store. Chat
+Continuation is application-owned. Configure `WithStore` so `Store.Load`
+returns history for Responses `previous_response_id` and `Store.Accept`
+handles identity, replay, and `Finish`. Merely supplying a Store does not
+change retention defaults — use `WithStoreDefault` when needed. Chat
 Completions and Anthropic continuation fields are rejected because they have
 no equivalent mapping in this compatibility profile.
 
 ## Application-owned response lifecycle
 
-Applications with their own durable execution and response storage can take
-control of response identity, acceptance, and terminal persistence through
-`Lifecycle`. Pass a function (often a method value) to `WithLifecycle`:
+Applications with their own durable execution and response storage take
+control through `llmux.Store`:
 
 ```go
-llmux.WithLifecycle(store.Accept)
+llmux.WithStore(store)
 
-type Lifecycle func(context.Context, *TurnRequest) (Acceptance, error)
+type Store interface {
+	Load(context.Context, string) ([]chat.Item, error)
+	Accept(context.Context, *chat.TurnRequest) (chat.Acceptance, error)
+}
 
 type Acceptance struct {
 	Response   Response  // identity for new work; ignored when Replay is set
@@ -159,7 +174,7 @@ type Acceptance struct {
 }
 ```
 
-Ordering when a Lifecycle is configured:
+Ordering when a Store is configured:
 
 1. Validate the request, resolve effective store policy, load continuation.
 2. `Accept` — reserve identity, reject conflicts, or return an idempotent
@@ -189,8 +204,8 @@ status, output, usage, sanitized public error, incomplete reason,
 metadata, effective store, and retrieval fields such as target and
 previous response ID.
 
-Without a Lifecycle, llmux keeps generating response IDs and timestamps
-internally. Effective retention (`TurnRequest.Retain`) requires a Lifecycle.
+Without a Store, llmux keeps generating response IDs and timestamps
+internally. Effective retention (`TurnRequest.Retain`) requires a Store.
 `WithStoreDefault` sets the policy when `store` is omitted (default false).
 Explicit `store:true` / `store:false` always win. Applications that cannot
 honor `store:false` should reject in Accept.
@@ -225,26 +240,17 @@ Cleanup after cancellation starts inside Finish via
 
 ## Unified catalog and MCP endpoint
 
-One authenticated `Catalog` callback feeds both `GET /models` and (when
-enabled) MCP discovery. Keys are resolver targets; values are `chat.Info`.
-Listing visibility never replaces Resolver authorization at invocation time.
-llmux reads the returned map and never mutates it or its nested values.
+`Catalog` is required construction: `List` feeds `GET /models` and MCP
+discovery; `Load` obtains agents for invocation. Keys are Load targets.
+Listing visibility never replaces Load authorization. llmux reads List maps
+and never mutates them. A nil Catalog projects empty listings and fails Load
+clearly. Execution never calls List merely to obtain capabilities.
 
 ```go
-handler := llmux.New(resolver,
-	llmux.WithCatalog(func(ctx context.Context) (map[string]chat.Info, error) {
-		// ctx carries the application's authentication. Return the
-		// targets this caller may see.
-		return map[string]chat.Info{
-			"agent/echo": {
-				Description: "Echoes a message.",
-				Tool:        "echo",
-				Created:     1735689600,
-				OwnedBy:     "acme-agents",
-			},
-		}, nil
-	}),
-	llmux.WithMCP(), // optional; without a catalog, /mcp lists no tools
+handler := llmux.New(catalog,
+	llmux.WithStore(store),          // optional persistence
+	llmux.WithStoreDefault(true),    // optional retention default
+	llmux.WithMCP(),                 // optional; nil/empty List → no tools
 )
 ```
 
@@ -258,8 +264,8 @@ Supported MCP methods:
 
 - `server/discover` — handled by the SDK; advertises the 2026-07-28 revision,
   server identity, and capabilities.
-- `tools/list` — catalog entries whose `Info.Tool` is nonempty.
-- `tools/call` — resolves the mapped target again and runs shared execution.
+- `tools/list` — `Catalog.List` entries whose `Info.Tool` is nonempty.
+- `tools/call` — maps the tool name to its catalog target, then `Catalog.Load`.
 
 `Transport` notes: no session storage and no sticky sessions —
 `Mcp-Session-Id` is neither read nor issued, `GET`/`DELETE` return 405, and
@@ -291,15 +297,14 @@ configurable, and no JSON-to-prompt conversion exists):
 
 The message becomes one canonical user-message item, and the invocation runs
 through the same machinery as the chat endpoints: authenticated context,
-Resolver authorization, Info validation, request/output limits, cancellation
-and bounded durable execution (`Acceptance.RunTimeout`), Lifecycle
-acceptance, exactly-once `Finish`, and persistence before a successful tool
-result. Replays returned by the application Lifecycle skip execution and map
-the stored response like any other. JSON-RPC request IDs are never treated
-as idempotency keys; MCP requests carry no `Idempotency-Key`, so replay
-behavior is owned entirely by the application Lifecycle. A listed tool is
-not an authorization grant: invocation independently resolves and executes
-the target.
+Catalog.Load authorization, Info validation, request/output limits, cancellation
+and bounded durable execution (`Acceptance.RunTimeout`), Store.Accept,
+exactly-once `Finish`, and persistence before a successful tool result.
+Replays returned by Store.Accept skip execution and map the stored response
+like any other. JSON-RPC request IDs are never treated as idempotency keys;
+MCP requests carry no `Idempotency-Key`, so replay behavior is owned entirely
+by the application Store. A listed tool is not an authorization grant:
+invocation independently loads and executes the target.
 
 Output mapping (completed tool results; ordering preserved):
 

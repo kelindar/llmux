@@ -1,6 +1,6 @@
-// Command mcp demonstrates llmux's optional MCP endpoint: one authenticated
-// catalog, projected into GET /models and (when enabled) the MCP tools at
-// /mcp.
+// Command mcp demonstrates llmux's optional MCP endpoint: one Catalog for
+// List (discovery) and Load (invocation), projected into GET /models and
+// (when enabled) the MCP tools at /mcp.
 //
 // The authentication wrapper below is ILLUSTRATIVE ONLY. In production the
 // token check must be real OAuth validation (or equivalent), and the MCP
@@ -33,23 +33,11 @@ var echo = chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.E
 	return chat.Outcome{}, emit(chat.Text("echo: " + message))
 })
 
-// resolve selects agents for invocation. It runs independently of the
-// catalog, so listing visibility never replaces authorization here.
-func resolve(_ context.Context, target string) (chat.Agent, chat.Info, error) {
-	switch target {
-	case "agent/echo":
-		return echo, chat.Info{Description: "Echoes the caller's message back as assistant text."}, nil
-	default:
-		return nil, chat.Info{}, &chat.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "not_found", Message: "unknown agent"}
-	}
-}
+// agents implements Catalog. List and Load are independent: listing
+// visibility never replaces Load authorization.
+type agents struct{}
 
-// catalog is the single authenticated listing callback. It receives the
-// request context produced by the authentication wrapper, so visibility is
-// an application decision per caller. Keys are resolver targets; Info.Tool
-// (nonempty) is the public MCP tool name, Info.Description its description,
-// and the remaining fields flow into GET /models.
-func catalog(ctx context.Context) (map[string]chat.Info, error) {
+func (agents) List(ctx context.Context) (map[string]chat.Info, error) {
 	info := chat.Info{
 		Description: "Echoes a message back as assistant text.",
 		Tool:        "echo",
@@ -66,22 +54,27 @@ func catalog(ctx context.Context) (map[string]chat.Info, error) {
 	}
 }
 
-// newHandler builds the llmux handler with the unified catalog and MCP
-// enabled. Both are opt-in: removing WithCatalog yields empty listings, and
-// removing WithMCP removes the /mcp route while chat endpoints are
+func (agents) Load(_ context.Context, target string) (chat.Agent, chat.Info, error) {
+	switch target {
+	case "agent/echo":
+		return echo, chat.Info{Description: "Echoes the caller's message back as assistant text."}, nil
+	default:
+		return nil, chat.Info{}, chat.NotFound()
+	}
+}
+
+// newHandler builds the llmux handler with Catalog and optional MCP.
+// Removing WithMCP removes the /mcp route while chat endpoints are
 // unaffected. Option ordering does not matter.
 func newHandler() *llmux.Handler {
-	return llmux.New(resolve,
-		llmux.WithCatalog(catalog),
-		llmux.WithMCP(),
-	)
+	return llmux.New(agents{}, llmux.WithMCP())
 }
 
 // withAuth is an ILLUSTRATIVE authentication wrapper: a fixed token map
 // standing in for real OAuth bearer-token validation. Replace it with your
 // middleware; the shape is what matters — authenticate outside llmux, reject
 // with 401 and a WWW-Authenticate challenge, then forward the authenticated
-// context so listing, resolution, acceptance, execution, and finish all see
+// context so listing, loading, acceptance, execution, and finish all see
 // the caller identity.
 func withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

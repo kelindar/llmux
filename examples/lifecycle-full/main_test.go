@@ -24,11 +24,8 @@ func TestLifecycleFull(t *testing.T) {
 		}
 		return chat.Outcome{}, emit.Text("echo: " + text)
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return agent, chat.Info{Continuation: true}, nil
-	})
 	mux := http.NewServeMux()
-	handler := llmux.New(resolver, llmux.WithLifecycle(store.Accept), llmux.WithContinuationStore(store), llmux.WithStoreDefault(true))
+	handler := llmux.New(&agents{echo: agent}, llmux.WithStore(store), llmux.WithStoreDefault(true))
 	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
 	mux.HandleFunc("GET /api/v1/responses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		rec, ok := store.get(r.PathValue("id"))
@@ -45,17 +42,17 @@ func TestLifecycleFull(t *testing.T) {
 		_ = json.MarshalWrite(w, body)
 	})
 
-	first := post(t, mux, `{"model":"agent/basic","store":true,"metadata":{"k":"v"},"input":"one"}`, "k1")
+	first := post(t, mux, `{"model":"echo","store":true,"metadata":{"k":"v"},"input":"one"}`, "k1")
 	require.Equal(t, http.StatusOK, first.Code)
 	id := responseID(t, first)
 	assert.Contains(t, first.Body.String(), `"k":"v"`)
 
-	replay := post(t, mux, `{"model":"agent/basic","store":true,"input":"one"}`, "k1")
+	replay := post(t, mux, `{"model":"echo","store":true,"input":"one"}`, "k1")
 	require.Equal(t, http.StatusOK, replay.Code)
 	assert.Equal(t, id, responseID(t, replay))
 	assert.Contains(t, replay.Body.String(), `"k":"v"`)
 
-	second := post(t, mux, `{"model":"agent/basic","store":true,"previous_response_id":"`+id+`","input":"two"}`, "")
+	second := post(t, mux, `{"model":"echo","store":true,"previous_response_id":"`+id+`","input":"two"}`, "")
 	require.Equal(t, http.StatusOK, second.Code)
 	assert.Contains(t, second.Body.String(), "echo: two")
 	id2 := responseID(t, second)
@@ -94,18 +91,11 @@ func TestIdempotencyKey(t *testing.T) {
 		return chat.Outcome{}, emit.Text("ok")
 	})
 	mux := http.NewServeMux()
-	handler := llmux.New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-			return agent, chat.Info{Continuation: true}, nil
-		}),
-		llmux.WithLifecycle(store.Accept),
-		llmux.WithContinuationStore(store),
-		llmux.WithStoreDefault(true),
-	)
+	handler := llmux.New(&agents{echo: agent}, llmux.WithStore(store), llmux.WithStoreDefault(true))
 	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
 
 	t.Run("reject leaves no reservation", func(t *testing.T) {
-		rejected := post(t, mux, `{"model":"agent/basic","store":false,"input":"no"}`, "same-key")
+		rejected := post(t, mux, `{"model":"echo","store":false,"input":"no"}`, "same-key")
 		require.Equal(t, http.StatusBadRequest, rejected.Code)
 		assert.Equal(t, 0, calls)
 		store.mu.Lock()
@@ -114,7 +104,7 @@ func TestIdempotencyKey(t *testing.T) {
 	})
 
 	t.Run("same key then accepts", func(t *testing.T) {
-		accepted := post(t, mux, `{"model":"agent/basic","store":true,"input":"yes"}`, "same-key")
+		accepted := post(t, mux, `{"model":"echo","store":true,"input":"yes"}`, "same-key")
 		require.Equal(t, http.StatusOK, accepted.Code)
 		assert.Equal(t, 1, calls)
 		assert.Contains(t, accepted.Body.String(), "ok")
@@ -130,17 +120,10 @@ func TestDurableExample(t *testing.T) {
 		return chat.Outcome{}, emit.Text("durable")
 	})
 	mux := http.NewServeMux()
-	handler := llmux.New(
-		chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-			return agent, chat.Info{Continuation: true, Extensions: map[string]bool{"x-durable": true}}, nil
-		}),
-		llmux.WithLifecycle(store.Accept),
-		llmux.WithContinuationStore(store),
-		llmux.WithStoreDefault(true),
-	)
+	handler := llmux.New(&agents{echo: agent}, llmux.WithStore(store), llmux.WithStoreDefault(true))
 	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", handler))
 
-	rec := post(t, mux, `{"model":"agent/basic","store":true,"input":"x","x-durable":true}`, "")
+	rec := post(t, mux, `{"model":"echo","store":true,"input":"x","x-durable":true}`, "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "durable")
 }

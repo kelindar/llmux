@@ -25,10 +25,6 @@ func (f AgentFunc) Run(ctx context.Context, req *Request, emit Emit) (Outcome, e
 	return f(ctx, req, emit)
 }
 
-// Resolver selects an agent and its declared Info for a target name.
-// Applications with resolver structs should pass a method value.
-type Resolver func(context.Context, string) (Agent, Info, error)
-
 // Emit is the serial event function passed to Agent.Run.
 // Emit copies nested item data into execution state before returning, so the
 // agent may retain and mutate the emitted Event afterward. Delivery callbacks

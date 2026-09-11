@@ -22,12 +22,9 @@ func TestHandlerBuild(t *testing.T) {
 		}
 		return chat.Outcome{}, emit(chat.Text("no image"))
 	})
-	resolver := chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
-		return agent, chat.Info{InputModalities: chat.ModalityText | chat.ModalityImage}, nil
-	})
-	handler := llmux.New(resolver)
+	handler := llmux.New(&agents{vision: agent})
 
-	body := `{"model":"agent/vision","messages":[{"role":"user","content":[{"type":"text","text":"what?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}}]}]}`
+	body := `{"model":"vision","messages":[{"role":"user","content":[{"type":"text","text":"what?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}}]}]}`
 	request := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()

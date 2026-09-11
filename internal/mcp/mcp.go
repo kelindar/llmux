@@ -31,31 +31,21 @@ const ProtocolVersion = "2026-07-28"
 // is not configurable and no other arguments are supported.
 const toolInputSchema = `{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`
 
-// Catalog returns the caller-visible unified agent catalog: resolver targets
-// mapped to their Info. It runs once per MCP request with the request
-// context; authorization belongs inside the callback. Only entries with a
-// nonempty Info.Tool become MCP tools, under Info.Tool as the public name.
-// A nil catalog function is treated as an empty catalog.
-type Catalog func(context.Context) (map[string]chat.Info, error)
-
-// Config configures a Transport.
-type Config struct {
-	// Catalog returns the caller-specific unified catalog. It may be nil,
-	// which yields an empty tool catalog rather than a hidden failure.
-	Catalog Catalog
-}
-
 // Host is the execution seam provided by the llmux Handler. It keeps the MCP
 // adapter from duplicating the execution engine, the capability validation,
 // or the lifecycle machinery.
 type Host interface {
-	// Resolve selects an agent and its Info for a target name.
+	// List returns the caller-visible unified catalog for this request.
+	// Only entries with a nonempty Info.Tool become MCP tools. A nil or empty
+	// result yields an empty tool catalog rather than a hidden failure.
+	List(ctx context.Context) (map[string]chat.Info, error)
+	// Resolve selects an agent and its Info for a target name via Catalog.Load.
 	Resolve(ctx context.Context, target string) (chat.Agent, chat.Info, error)
 	// Validate checks a parsed request against agent Info.
 	Validate(parsed *protocol.ParsedRequest, info chat.Info) error
 	// Prepare completes a parsed request (store policy, media resolution).
 	Prepare(ctx context.Context, parsed *protocol.ParsedRequest) error
-	// Accept applies lifecycle acceptance. Idempotency keys come from the
+	// Accept applies Store acceptance. Idempotency keys come from the
 	// calling protocol; MCP passes none, so JSON-RPC request IDs are never
 	// idempotency keys.
 	Accept(ctx context.Context, idempotencyKey string, parsed *protocol.ParsedRequest) (chat.Acceptance, bool, error)
@@ -72,7 +62,6 @@ type Host interface {
 // Transport owns the stateless Streamable HTTP endpoint for one Handler.
 type Transport struct {
 	host    Host
-	catalog Catalog
 	handler *sdkmcp.StreamableHTTPHandler
 	cache   *sdkmcp.SchemaCache
 }
@@ -81,8 +70,8 @@ type Transport struct {
 type serverKey struct{}
 
 // NewTransport builds the MCP endpoint transport.
-func NewTransport(host Host, config Config) *Transport {
-	t := &Transport{host: host, catalog: config.Catalog, cache: sdkmcp.NewSchemaCache()}
+func NewTransport(host Host) *Transport {
+	t := &Transport{host: host, cache: sdkmcp.NewSchemaCache()}
 	t.handler = sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server {
 		server, _ := r.Context().Value(serverKey{}).(*sdkmcp.Server)
 		return server
@@ -99,19 +88,15 @@ func NewTransport(host Host, config Config) *Transport {
 	return t
 }
 
-// ServeHTTP serves one MCP request. The catalog callback runs exactly once
-// with the authenticated request context; the projected tool set is pinned
-// to this request and never shared across callers or identities.
+// ServeHTTP serves one MCP request. Host.List runs exactly once with the
+// authenticated request context; the projected tool set is pinned to this
+// request and never shared across callers or identities.
 func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var catalog map[string]chat.Info
-	if t.catalog != nil {
-		var err error
-		catalog, err = t.catalog(r.Context())
-		if err != nil {
-			t.host.LogError(r.Context(), err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
+	catalog, err := t.host.List(r.Context())
+	if err != nil {
+		t.host.LogError(r.Context(), err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
 	server, err := t.buildServer(catalog)
 	if err != nil {
@@ -156,10 +141,11 @@ func (t *Transport) buildServer(catalog map[string]chat.Info) (*sdkmcp.Server, e
 		if err := validateToolName(e.tool); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(e.target) == "" {
+		_, exists := seen[e.tool]
+		switch {
+		case strings.TrimSpace(e.target) == "":
 			return nil, fmt.Errorf("llmux: mcp tool %q has an empty target", e.tool)
-		}
-		if _, exists := seen[e.tool]; exists {
+		case exists:
 			return nil, fmt.Errorf("llmux: duplicate mcp tool name %q", e.tool)
 		}
 		seen[e.tool] = struct{}{}
