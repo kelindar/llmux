@@ -305,11 +305,13 @@ func (i Item) Validate(maxMediaBytes int64, output bool) error {
 		if len(i.Content) != 1 {
 			return errors.New("media item requires exactly one content part")
 		}
-		if i.Content[0].Type != PartImage && i.Content[0].Type != PartAudio {
+		switch i.Content[0].Type {
+		case PartImage, PartAudio:
+			if err := i.Content[0].Validate(maxMediaBytes); err != nil {
+				return err
+			}
+		default:
 			return errors.New("media item must contain image or audio")
-		}
-		if err := i.Content[0].Validate(maxMediaBytes); err != nil {
-			return err
 		}
 	case ItemExtension:
 		if len(i.Content) > 0 || len(i.Output) > 0 || i.Role != "" || i.CallID != "" || i.Name != "" || i.Arguments != "" || len(i.Summary) > 0 || len(i.EncryptedContent) > 0 {

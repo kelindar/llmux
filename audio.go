@@ -251,30 +251,34 @@ func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, 
 		return audio.SpeechRequest{}, chat.Invalid("voice", "voice is required")
 	}
 	request := audio.SpeechRequest{Model: model, Input: input, Voice: voice, Speed: 1, ResponseFormat: "mp3", StreamFormat: "audio"}
-	if value, ok, err := decodeString(object, "instructions"); err != nil {
+	switch value, ok, err := decodeString(object, "instructions"); {
+	case err != nil:
 		return audio.SpeechRequest{}, err
-	} else if ok {
+	case ok:
 		request.Instructions = value
 	}
-	if value, ok, err := decodeString(object, "response_format"); err != nil {
+	switch value, ok, err := decodeString(object, "response_format"); {
+	case err != nil:
 		return audio.SpeechRequest{}, err
-	} else if ok {
+	case ok:
 		request.ResponseFormat = strings.ToLower(value)
 	}
 	if !validSpeechFormat(request.ResponseFormat) {
 		return audio.SpeechRequest{}, chat.Unsupported("response_format", "supported formats are mp3, opus, aac, flac, wav, and pcm")
 	}
-	if value, err := decodeFloat(object, "speed"); err != nil {
+	switch value, err := decodeFloat(object, "speed"); {
+	case err != nil:
 		return audio.SpeechRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0.25 || *value > 4 {
 			return audio.SpeechRequest{}, chat.Invalid("speed", "speed must be between 0.25 and 4")
 		}
 		request.Speed = *value
 	}
-	if value, ok, err := decodeString(object, "stream_format"); err != nil {
+	switch value, ok, err := decodeString(object, "stream_format"); {
+	case err != nil:
 		return audio.SpeechRequest{}, err
-	} else if ok {
+	case ok:
 		request.StreamFormat = strings.ToLower(value)
 	}
 	switch request.StreamFormat {

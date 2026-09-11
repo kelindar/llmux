@@ -177,16 +177,9 @@ func Render(resp chat.Response) (any, error) {
 	return responseObject(req, resp, output), nil
 }
 
-func responseStatus(resp chat.Response, outcome chat.Outcome) string {
-	return string(cmp.Or(resp.Status, outcome.Status, chat.StatusCompleted))
-}
-
 func responseObject(req chat.Request, resp chat.Response, output []any) wireResponse {
-	status := responseStatus(resp, chat.Outcome{})
-	model := resp.Target
-	if model == "" {
-		model = req.Target
-	}
+	status := string(cmp.Or(resp.Status, chat.StatusCompleted))
+	model := cmp.Or(resp.Target, req.Target)
 	value := wireResponse{
 		ID:                 resp.ID,
 		Object:             "response",
@@ -221,10 +214,7 @@ func responseObject(req chat.Request, resp chat.Response, output []any) wireResp
 	if len(resp.Metadata) > 0 {
 		value.Metadata = resp.Metadata
 	}
-	instructions := resp.Instructions
-	if instructions == "" {
-		instructions = req.Instructions
-	}
+	instructions := cmp.Or(resp.Instructions, req.Instructions)
 	if instructions != "" {
 		value.Instructions = instructions
 	}
@@ -276,9 +266,10 @@ func responseObject(req chat.Request, resp chat.Response, output []any) wireResp
 		value.Tools = append(value.Tools, map[string]any{"type": "image_generation"})
 	}
 	if req.Controls.ToolChoice != nil {
-		if req.Controls.ToolChoice.Mode == "function" {
+		switch req.Controls.ToolChoice.Mode {
+		case "function":
 			value.ToolChoice = map[string]any{"type": "function", "name": req.Controls.ToolChoice.Name}
-		} else {
+		default:
 			value.ToolChoice = req.Controls.ToolChoice.Mode
 		}
 	}
@@ -302,10 +293,7 @@ func responseUsage(usage *chat.Usage) wireUsage {
 }
 
 func responseItem(item chat.Item) (any, error) {
-	status := item.Status
-	if status == "" {
-		status = chat.StatusCompleted
-	}
+	status := cmp.Or(item.Status, chat.StatusCompleted)
 	switch item.Type {
 	case chat.ItemMessage:
 		for _, part := range item.Content {
@@ -370,20 +358,21 @@ func responseFunctionOutput(parts []chat.Part) (any, error) {
 		case chat.PartText:
 			values = append(values, map[string]any{"type": "input_text", "text": part.Text})
 		case chat.PartImage, chat.PartFile:
-			if part.Media == nil {
+			switch {
+			case part.Media == nil:
 				return nil, errors.New("function output media is missing")
-			}
-			if len(part.Media.Data) > 0 {
+			case len(part.Media.Data) > 0:
 				data, err := mediaDataURL(*part.Media)
 				if err != nil {
 					return nil, err
 				}
-				if part.Type == chat.PartImage {
+				switch part.Type {
+				case chat.PartImage:
 					values = append(values, map[string]any{"type": "input_image", "image_url": data, "detail": "auto"})
-				} else {
+				default:
 					values = append(values, map[string]any{"type": "input_file", "file_data": base64.StdEncoding.EncodeToString(part.Media.Data), "filename": part.Media.Filename})
 				}
-			} else {
+			default:
 				return nil, chat.Unsupported("output", "function output media must be inline")
 			}
 		default:

@@ -119,7 +119,8 @@ func (s *eventState) apply(event chat.Event) ([]chat.Event, error) {
 				return nil, err
 			}
 			index = s.indexes[id]
-		} else if s.items[index].Type != chat.ItemMessage || s.items[index].Status != chat.StatusInProgress {
+		}
+		if exists && (s.items[index].Type != chat.ItemMessage || s.items[index].Status != chat.StatusInProgress) {
 			return nil, fmt.Errorf("text item %q is not open", id)
 		}
 		if err := s.addBytes(int64(len(event.Delta))); err != nil {

@@ -53,17 +53,19 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		input = append(input, items...)
 	}
 	controls := chat.Controls{MaxOutputTokens: maxTokens, Extensions: namespacedExtensions(object, allowed)}
-	if value, err := decodeFloat(object, "temperature"); err != nil {
+	switch value, err := decodeFloat(object, "temperature"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0 || *value > 1 {
 			return parsedRequest{}, chat.Invalid("temperature", "temperature must be between 0 and 1")
 		}
 		controls.Temperature = value
 	}
-	if value, err := decodeFloat(object, "top_p"); err != nil {
+	switch value, err := decodeFloat(object, "top_p"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0 || *value > 1 {
 			return parsedRequest{}, chat.Invalid("top_p", "top_p must be between 0 and 1")
 		}
@@ -122,9 +124,10 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		}
 	}
 	stream := false
-	if value, err := decodeBool(object, "stream"); err != nil {
+	switch value, err := decodeBool(object, "stream"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		stream = *value
 	}
 	return parsedRequest{

@@ -44,15 +44,19 @@ func (o Outcome) Validate() error {
 		return errors.New("outcome status cannot be in_progress")
 	case o.Usage != nil && (o.Usage.Input < 0 || o.Usage.Output < 0 || o.Usage.Total < 0 || o.Usage.Cached < 0 || o.Usage.Reasoning < 0):
 		return errors.New("outcome usage cannot contain negative values")
-	}
-	if o.StopReason != "" {
-		switch o.StopReason {
-		case StopNormal, StopToolCall, StopLength, StopError, StopCancelled:
-		default:
-			return fmt.Errorf("invalid outcome stop reason %q", o.StopReason)
-		}
+	case o.StopReason != "" && !validStopReason(o.StopReason):
+		return fmt.Errorf("invalid outcome stop reason %q", o.StopReason)
 	}
 	return nil
+}
+
+func validStopReason(reason StopReason) bool {
+	switch reason {
+	case StopNormal, StopToolCall, StopLength, StopError, StopCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 // Response is the complete client-visible response used for creation,

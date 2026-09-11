@@ -31,8 +31,11 @@ func main() {
 	catalog := &agents{
 		vision: chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			for _, part := range req.Input[0].Content {
-				if part.Type == chat.PartImage && part.Media != nil {
-					return chat.Outcome{}, emit.Text(fmt.Sprintf("received %s", part.Media.MIMEType))
+				switch part.Type {
+				case chat.PartImage:
+					if part.Media != nil {
+						return chat.Outcome{}, emit.Text(fmt.Sprintf("received %s", part.Media.MIMEType))
+					}
 				}
 			}
 			return chat.Outcome{}, emit.Text("no image")

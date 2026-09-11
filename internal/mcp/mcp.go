@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -272,8 +273,7 @@ func (t *Transport) runAgentTool(ctx context.Context, e entry, message string) (
 			return chat.Unsupported("reasoning.summary", "reasoning summary output was not requested")
 		case event.Type == chat.EventActivity && !acceptance.Activity:
 			return chat.Unsupported("output", "activity events were not enabled for this request")
-		}
-		if event.Type == chat.EventActivity {
+		case event.Type == chat.EventActivity:
 			return nil
 		}
 		if err := protocol.ValidateOutputEvent(event, info); err != nil {
@@ -334,20 +334,17 @@ func toolResultFromResponse(resp chat.Response) (*sdkmcp.CallToolResult, error) 
 	case chat.StatusIncomplete:
 		// Truncated output is returned, but flagged as an error so partial
 		// content is never mistaken for a complete answer.
-		reason := resp.Incomplete
-		if reason == "" {
-			reason = "unknown"
-		}
-		result.Content = append(result.Content, &sdkmcp.TextContent{Text: "output incomplete: " + reason})
+		result.Content = append(result.Content, &sdkmcp.TextContent{Text: "output incomplete: " + cmp.Or(resp.Incomplete, "unknown")})
 		result.IsError = true
 		return result, nil
 	case chat.StatusCancelled:
 		return nil, errors.New("execution was cancelled")
 	case chat.StatusFailed:
-		if resp.Error != nil && resp.Error.Message != "" {
-			return nil, errors.New(resp.Error.Message)
+		msg := "the agent could not complete this request"
+		if resp.Error != nil {
+			msg = cmp.Or(resp.Error.Message, msg)
 		}
-		return nil, errors.New("the agent could not complete this request")
+		return nil, errors.New(msg)
 	default:
 		return nil, fmt.Errorf("agent returned unsupported status %q", resp.Status)
 	}

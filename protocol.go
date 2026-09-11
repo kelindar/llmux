@@ -220,9 +220,10 @@ func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapt
 		for _, item := range result.Items {
 			if err := stream.Event(chat.OutputItem(item)); err != nil {
 				h.logError(context.Background(), err)
-				if stream.Started() {
+				switch {
+				case stream.Started():
 					_ = stream.Fail(err)
-				} else {
+				default:
 					writeProtocolError(w, parsed.Kind, err)
 				}
 				return
@@ -230,9 +231,10 @@ func (h *Handler) writeReplay(w http.ResponseWriter, parsed parsedRequest, adapt
 		}
 		if err := stream.Complete(result.Outcome, result.Items); err != nil {
 			h.logError(context.Background(), err)
-			if stream.Started() {
+			switch {
+			case stream.Started():
 				_ = stream.Fail(err)
-			} else {
+			default:
 				writeProtocolError(w, parsed.Kind, err)
 			}
 		}
@@ -281,18 +283,20 @@ func (h *Handler) serveStream(
 	finalErr := h.finishTurn(runCtx, acceptance, &resp, runErr)
 	if runErr != nil {
 		h.logError(r.Context(), runErr)
-		if delivering && stream.Started() {
+		switch {
+		case delivering && stream.Started():
 			_ = stream.Fail(runErr)
-		} else if delivering {
+		case delivering:
 			writeProtocolError(w, parsed.Kind, runErr)
 		}
 		return
 	}
 	if finalErr != nil {
 		h.logError(r.Context(), finalErr)
-		if delivering && stream.Started() {
+		switch {
+		case delivering && stream.Started():
 			_ = stream.Fail(finalErr)
-		} else if delivering {
+		case delivering:
 			writeProtocolError(w, parsed.Kind, finalErr)
 		}
 		return
@@ -302,9 +306,10 @@ func (h *Handler) serveStream(
 	}
 	if err := stream.Complete(outcomeFromResponse(resp), resp.Output); err != nil {
 		h.logError(r.Context(), err)
-		if stream.Started() {
+		switch {
+		case stream.Started():
 			_ = stream.Fail(err)
-		} else {
+		default:
 			writeProtocolError(w, parsed.Kind, err)
 		}
 	}

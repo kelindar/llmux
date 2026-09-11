@@ -77,10 +77,10 @@ type FunctionTool struct {
 
 // Validate checks a function tool declaration.
 func (t FunctionTool) Validate() error {
-	if t.Name == "" {
+	switch {
+	case t.Name == "":
 		return errors.New("tool name is required")
-	}
-	if len(t.Parameters) != 0 {
+	case len(t.Parameters) != 0:
 		var parameters map[string]jsontext.Value
 		if err := json.Unmarshal(t.Parameters, &parameters); err != nil || parameters == nil {
 			return fmt.Errorf("tool %q parameters must be a JSON object", t.Name)

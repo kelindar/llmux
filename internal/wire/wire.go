@@ -192,10 +192,12 @@ func ParseDataURL(value string) (chat.Media, error) {
 	}
 	meta = strings.TrimPrefix(meta, "data:")
 	mime := ""
-	if semi := strings.IndexByte(meta, ';'); semi >= 0 {
+	semi := strings.IndexByte(meta, ';')
+	switch {
+	case semi >= 0:
 		mime = meta[:semi]
 		meta = meta[semi+1:]
-	} else {
+	default:
 		mime = meta
 		meta = ""
 	}
@@ -263,11 +265,13 @@ func ParseChatContent(raw jsontext.Value) ([]chat.Part, error) {
 				if err != nil {
 					return nil, err
 				}
-				detail := ""
-				if value, ok, err := DecodeString(imageObject, "detail"); err != nil {
+				detailValue, hasDetail, err := DecodeString(imageObject, "detail")
+				if err != nil {
 					return nil, err
-				} else if ok {
-					detail = value
+				}
+				detail := ""
+				if hasDetail {
+					detail = detailValue
 				}
 				if err := ValidateImageDetail(detail, "messages.content.image_url.detail"); err != nil {
 					return nil, err
@@ -334,10 +338,12 @@ func ParseFileMedia(object map[string]jsontext.Value, param string) (chat.Media,
 		return chat.Media{}, "", err
 	}
 	filename := ""
-	if value, ok, err := DecodeString(object, "filename"); err != nil {
+	filenameValue, hasFilename, err := DecodeString(object, "filename")
+	if err != nil {
 		return chat.Media{}, "", err
-	} else if ok {
-		filename = value
+	}
+	if hasFilename {
+		filename = filenameValue
 	}
 	sources := 0
 	rawData, hasData := object["file_data"]
@@ -382,19 +388,21 @@ func ParseFileMedia(object map[string]jsontext.Value, param string) (chat.Media,
 
 // ParseFileData parses base64 or data URL file data into inline chat.Media.
 func ParseFileData(value, param string) (chat.Media, error) {
-	if strings.HasPrefix(value, "data:") {
+	switch {
+	case strings.HasPrefix(value, "data:"):
 		media, err := ParseDataURL(value)
 		if err != nil {
 			return chat.Media{}, chat.Invalid(param, "must be a valid base64 data URL")
 		}
 		media.MIMEType = cmp.Or(media.MIMEType, "application/octet-stream")
 		return media, nil
+	default:
+		data, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			return chat.Media{}, chat.Invalid(param, "must be valid base64")
+		}
+		return chat.InlineMedia("application/octet-stream", data), nil
 	}
-	data, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		return chat.Media{}, chat.Invalid(param, "must be valid base64")
-	}
-	return chat.InlineMedia("application/octet-stream", data), nil
 }
 
 // ValidateImageDetail checks that detail is an allowed image detail value.

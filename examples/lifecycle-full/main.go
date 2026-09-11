@@ -147,15 +147,15 @@ func (s *store) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Acceptan
 	}
 
 	key := turn.IdempotencyKey
-	if key != "" {
-		if s.running[key] {
-			return chat.Acceptance{}, &chat.Error{
-				Status:  http.StatusConflict,
-				Type:    "invalid_request_error",
-				Code:    "request_in_progress",
-				Message: "request already running",
-			}
+	switch {
+	case key != "" && s.running[key]:
+		return chat.Acceptance{}, &chat.Error{
+			Status:  http.StatusConflict,
+			Type:    "invalid_request_error",
+			Code:    "request_in_progress",
+			Message: "request already running",
 		}
+	case key != "":
 		if id, ok := s.byKey[key]; ok {
 			rec := s.byID[id]
 			replay := rec.Response.Clone()

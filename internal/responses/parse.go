@@ -31,9 +31,10 @@ func parseToolChoice(raw jsontext.Value) (*chat.ToolChoice, error) {
 		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "function": true}); err != nil {
 			return nil, err
 		}
-		if typeName, ok, err := decodeString(object, "type"); err != nil {
+		switch typeName, ok, err := decodeString(object, "type"); {
+		case err != nil:
 			return nil, err
-		} else if ok && typeName != "function" {
+		case ok && typeName != "function":
 			return nil, chat.Unsupported("tool_choice.type", "only function tool choices are supported")
 		}
 		function, err := rawObject(functionRaw, "tool_choice.function")
@@ -93,25 +94,28 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		return parsedRequest{}, err
 	}
 	controls := chat.Controls{Extensions: namespacedExtensions(object, allowed)}
-	if value, err := decodeInt(object, "max_output_tokens"); err != nil {
+	switch value, err := decodeInt(object, "max_output_tokens"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 1 {
 			return parsedRequest{}, chat.Invalid("max_output_tokens", "max_output_tokens must be positive")
 		}
 		controls.MaxOutputTokens = value
 	}
-	if value, err := decodeFloat(object, "temperature"); err != nil {
+	switch value, err := decodeFloat(object, "temperature"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0 || *value > 2 {
 			return parsedRequest{}, chat.Invalid("temperature", "temperature must be between 0 and 2")
 		}
 		controls.Temperature = value
 	}
-	if value, err := decodeFloat(object, "top_p"); err != nil {
+	switch value, err := decodeFloat(object, "top_p"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0 || *value > 1 {
 			return parsedRequest{}, chat.Invalid("top_p", "top_p must be between 0 and 1")
 		}
@@ -193,9 +197,10 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		}
 	}
 	stream := false
-	if value, err := decodeBool(object, "stream"); err != nil {
+	switch value, err := decodeBool(object, "stream"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		stream = *value
 	}
 	instructions := ""
@@ -418,11 +423,12 @@ func parseResponsesContent(raw jsontext.Value, param string) ([]chat.Part, error
 				if err := wire.ValidateImageDetail(detail, param+".detail"); err != nil {
 					return nil, err
 				}
-				if ok {
+				switch {
+				case ok:
 					media, err = parseMediaURL(imageURL, detail)
-				} else if fileIDOK {
+				case fileIDOK:
 					media = chat.AssetMedia("image/*", fileID)
-				} else {
+				default:
 					return nil, chat.Invalid(param, "input_image requires image_url or file_id")
 				}
 				if err != nil {
@@ -508,9 +514,10 @@ func parseResponsesTools(raw jsontext.Value) ([]chat.FunctionTool, bool, error) 
 		if parameters, ok := object["parameters"]; ok {
 			tool.Parameters = append(jsontext.Value(nil), parameters...)
 		}
-		if strict, err := decodeBool(object, "strict"); err != nil {
+		switch strict, err := decodeBool(object, "strict"); {
+		case err != nil:
 			return nil, false, err
-		} else {
+		default:
 			tool.Strict = strict
 		}
 		tools = append(tools, tool)
@@ -577,9 +584,10 @@ func parseResponsesReasoning(raw jsontext.Value) (*chat.ReasoningControl, error)
 		return nil, err
 	}
 	reasoning := &chat.ReasoningControl{}
-	if value, ok, err := decodeString(object, "effort"); err != nil {
+	switch value, ok, err := decodeString(object, "effort"); {
+	case err != nil:
 		return nil, err
-	} else if ok {
+	case ok:
 		reasoning.Effort = value
 	}
 	if raw, ok := object["summary"]; ok && string(raw) != "null" {

@@ -116,22 +116,21 @@ func NewAdapter() internalprotocol.Adapter { return Adapter{} }
 
 // ValidateEvent checks whether event can be encoded for Anthropic Messages.
 func (Adapter) ValidateEvent(event chat.Event) error {
-	if event.Type == chat.EventActivity {
+	switch event.Type {
+	case chat.EventActivity:
 		return chat.Unsupported("output", "Anthropic Messages output supports text and tool_use only")
-	}
-	if event.Type != chat.EventItem {
-		return nil
-	}
-	switch event.Item.Type {
-	case chat.ItemMessage:
-		for _, part := range event.Item.Content {
-			if part.Type != chat.PartText {
-				return chat.Unsupported("output", "Anthropic Messages output supports text and tool_use only")
+	case chat.EventItem:
+		switch event.Item.Type {
+		case chat.ItemMessage:
+			for _, part := range event.Item.Content {
+				if part.Type != chat.PartText {
+					return chat.Unsupported("output", "Anthropic Messages output supports text and tool_use only")
+				}
 			}
+		case chat.ItemFunctionCall:
+		default:
+			return chat.Unsupported("output", "Anthropic Messages output supports text and tool_use only")
 		}
-	case chat.ItemFunctionCall:
-	default:
-		return chat.Unsupported("output", "Anthropic Messages output supports text and tool_use only")
 	}
 	return nil
 }

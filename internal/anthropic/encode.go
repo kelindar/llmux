@@ -84,11 +84,12 @@ func anthropicOutput(items []chat.Item) ([]any, bool, error) {
 }
 
 func anthropicStopReason(outcome chat.Outcome, tools bool) string {
-	if tools || outcome.StopReason == chat.StopToolCall {
+	switch {
+	case tools || outcome.StopReason == chat.StopToolCall:
 		return "tool_use"
-	}
-	if outcome.Status == chat.StatusIncomplete || outcome.StopReason == chat.StopLength {
+	case outcome.Status == chat.StatusIncomplete || outcome.StopReason == chat.StopLength:
 		return "max_tokens"
+	default:
+		return "end_turn"
 	}
-	return "end_turn"
 }

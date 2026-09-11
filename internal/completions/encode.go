@@ -142,13 +142,14 @@ func chatMessage(items []chat.Item, outcome chat.Outcome) (completionMessage, st
 }
 
 func chatFinishReason(outcome chat.Outcome, tools bool) string {
-	if tools || outcome.StopReason == chat.StopToolCall {
+	switch {
+	case tools || outcome.StopReason == chat.StopToolCall:
 		return "tool_calls"
-	}
-	if outcome.Status == chat.StatusIncomplete || outcome.StopReason == chat.StopLength {
+	case outcome.Status == chat.StatusIncomplete || outcome.StopReason == chat.StopLength:
 		return "length"
+	default:
+		return "stop"
 	}
-	return "stop"
 }
 
 func chatUsage(usage *chat.Usage) completionUsage {

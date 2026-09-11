@@ -44,14 +44,16 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		input = append(input, items...)
 	}
 	controls := chat.Controls{Extensions: namespacedExtensions(object, allowed)}
-	if maxTokens, err := decodeInt(object, "max_tokens"); err != nil {
+	switch maxTokens, err := decodeInt(object, "max_tokens"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if maxTokens != nil {
+	case maxTokens != nil:
 		controls.MaxOutputTokens = maxTokens
 	}
-	if maxTokens, err := decodeInt(object, "max_completion_tokens"); err != nil {
+	switch maxTokens, err := decodeInt(object, "max_completion_tokens"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if maxTokens != nil {
+	case maxTokens != nil:
 		if controls.MaxOutputTokens != nil {
 			return parsedRequest{}, chat.Invalid("max_completion_tokens", "max_tokens and max_completion_tokens cannot both be set")
 		}
@@ -60,17 +62,19 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 	if controls.MaxOutputTokens != nil && *controls.MaxOutputTokens < 1 {
 		return parsedRequest{}, chat.Invalid("max_tokens", "max_tokens must be positive")
 	}
-	if value, err := decodeFloat(object, "temperature"); err != nil {
+	switch value, err := decodeFloat(object, "temperature"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0 || *value > 2 {
 			return parsedRequest{}, chat.Invalid("temperature", "temperature must be between 0 and 2")
 		}
 		controls.Temperature = value
 	}
-	if value, err := decodeFloat(object, "top_p"); err != nil {
+	switch value, err := decodeFloat(object, "top_p"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		if *value < 0 || *value > 1 {
 			return parsedRequest{}, chat.Invalid("top_p", "top_p must be between 0 and 1")
 		}
@@ -191,9 +195,10 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 		return parsedRequest{}, chat.Unsupported("user", "the user field is not supported")
 	}
 	stream := false
-	if value, err := decodeBool(object, "stream"); err != nil {
+	switch value, err := decodeBool(object, "stream"); {
+	case err != nil:
 		return parsedRequest{}, err
-	} else if value != nil {
+	case value != nil:
 		stream = *value
 	}
 	return parsedRequest{
@@ -267,9 +272,10 @@ func parseChatToolCall(raw jsontext.Value) (chat.Item, error) {
 	if err := rejectUnknownStrict(object, map[string]bool{"id": true, "type": true, "function": true}); err != nil {
 		return chat.Item{}, err
 	}
-	if typeName, ok, err := decodeString(object, "type"); err != nil {
+	switch typeName, ok, err := decodeString(object, "type"); {
+	case err != nil:
 		return chat.Item{}, err
-	} else if ok && typeName != "function" {
+	case ok && typeName != "function":
 		return chat.Item{}, chat.Unsupported("messages.tool_calls.type", "only function tool calls are supported")
 	}
 	callID, err := requireString(object, "id")
@@ -312,9 +318,10 @@ func parseChatTools(raw jsontext.Value) ([]chat.FunctionTool, error) {
 			return nil, err
 		}
 		typeName := "function"
-		if value, ok, err := decodeString(object, "type"); err != nil {
+		switch value, ok, err := decodeString(object, "type"); {
+		case err != nil:
 			return nil, err
-		} else if ok {
+		case ok:
 			typeName = value
 		}
 		if typeName != "function" {
@@ -332,17 +339,19 @@ func parseChatTools(raw jsontext.Value) ([]chat.FunctionTool, error) {
 			return nil, err
 		}
 		tool := chat.FunctionTool{Name: name}
-		if value, ok, err := decodeString(function, "description"); err != nil {
+		switch value, ok, err := decodeString(function, "description"); {
+		case err != nil:
 			return nil, err
-		} else if ok {
+		case ok:
 			tool.Description = value
 		}
 		if parameters, ok := function["parameters"]; ok {
 			tool.Parameters = append(jsontext.Value(nil), parameters...)
 		}
-		if strict, err := decodeBool(function, "strict"); err != nil {
+		switch strict, err := decodeBool(function, "strict"); {
+		case err != nil:
 			return nil, err
-		} else {
+		default:
 			tool.Strict = strict
 		}
 		tools = append(tools, tool)
@@ -368,9 +377,10 @@ func parseToolChoice(raw jsontext.Value) (*chat.ToolChoice, error) {
 		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "function": true}); err != nil {
 			return nil, err
 		}
-		if typeName, ok, err := decodeString(object, "type"); err != nil {
+		switch typeName, ok, err := decodeString(object, "type"); {
+		case err != nil:
 			return nil, err
-		} else if ok && typeName != "function" {
+		case ok && typeName != "function":
 			return nil, chat.Unsupported("tool_choice.type", "only function tool choices are supported")
 		}
 		function, err := rawObject(functionRaw, "tool_choice.function")
@@ -497,9 +507,10 @@ func parseResponseFormat(raw jsontext.Value) (chat.OutputFormat, error) {
 			return chat.OutputFormat{}, chat.Invalid("response_format.json_schema.schema", "schema must be valid JSON")
 		}
 		description := ""
-		if value, ok, err := decodeString(schemaObject, "description"); err != nil {
+		switch value, ok, err := decodeString(schemaObject, "description"); {
+		case err != nil:
 			return chat.OutputFormat{}, err
-		} else if ok {
+		case ok:
 			description = value
 		}
 		strict, err := decodeBool(schemaObject, "strict")

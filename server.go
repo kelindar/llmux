@@ -98,47 +98,54 @@ func WithErrorLog(logf func(context.Context, error)) Option {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/chat/completions":
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			h.serveChat(w, r)
+		default:
 			writeProtocolError(w, protocolChat, methodError(r.Method))
-			return
 		}
-		h.serveChat(w, r)
 	case "/responses":
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			h.serveResponses(w, r)
+		default:
 			writeProtocolError(w, protocolResponses, methodError(r.Method))
-			return
 		}
-		h.serveResponses(w, r)
 	case "/messages":
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			h.serveMessages(w, r)
+		default:
 			writeProtocolError(w, protocolAnthropic, methodError(r.Method))
-			return
 		}
-		h.serveMessages(w, r)
 	case "/audio/transcriptions":
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			h.serveTranscription(w, r)
+		default:
 			writeProtocolError(w, protocolChat, methodError(r.Method))
-			return
 		}
-		h.serveTranscription(w, r)
 	case "/audio/speech":
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			h.serveSpeech(w, r)
+		default:
 			writeProtocolError(w, protocolChat, methodError(r.Method))
-			return
 		}
-		h.serveSpeech(w, r)
 	case "/models":
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			h.serveModels(w, r)
+		default:
 			writeProtocolError(w, protocolChat, methodError(r.Method))
-			return
 		}
-		h.serveModels(w, r)
 	case "/mcp":
-		if h.mcp == nil {
+		switch {
+		case h.mcp == nil:
 			writeProtocolError(w, protocolChat, notFoundError())
-			return
+		default:
+			h.serveMCP(w, r)
 		}
-		h.serveMCP(w, r)
 	default:
 		writeProtocolError(w, protocolChat, notFoundError())
 	}
@@ -436,13 +443,14 @@ func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Info) error {
 		if err := req.Controls.ToolChoice.Validate(); err != nil {
 			return chat.Invalid("tool_choice", err.Error())
 		}
-		if len(req.Controls.Tools) == 0 {
+		switch {
+		case len(req.Controls.Tools) == 0:
 			switch req.Controls.ToolChoice.Mode {
 			case "auto", "none":
 			default:
 				return chat.Invalid("tool_choice", "tool_choice requires tools")
 			}
-		} else if req.Controls.ToolChoice.Mode == "function" {
+		case req.Controls.ToolChoice.Mode == "function":
 			found := false
 			for _, tool := range req.Controls.Tools {
 				if tool.Name == req.Controls.ToolChoice.Name {

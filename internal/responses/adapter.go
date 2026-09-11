@@ -127,7 +127,8 @@ func NewAdapter() internalprotocol.Adapter { return Adapter{} }
 
 // ValidateEvent checks whether event can be encoded for the Responses API.
 func (Adapter) ValidateEvent(event chat.Event) error {
-	if event.Type == chat.EventActivity {
+	switch event.Type {
+	case chat.EventActivity:
 		switch {
 		case strings.TrimSpace(event.Name) == "" || strings.ContainsAny(event.Name, "./ \t\r\n"):
 			return chat.Invalid("activity", "activity name must be a non-empty token without separators")
@@ -136,24 +137,22 @@ func (Adapter) ValidateEvent(event chat.Event) error {
 		default:
 			return nil
 		}
-	}
-	if event.Type != chat.EventItem {
-		return nil
-	}
-	switch event.Item.Type {
-	case chat.ItemMedia:
-		if len(event.Item.Content) != 1 || event.Item.Content[0].Type != chat.PartImage {
-			return chat.Unsupported("output", "OpenAI Responses compatibility exposes image results, not audio results")
-		}
-	case chat.ItemMessage:
-		for _, part := range event.Item.Content {
-			if part.Type != chat.PartText {
-				return chat.Unsupported("output", "Responses message output supports text parts only")
+	case chat.EventItem:
+		switch event.Item.Type {
+		case chat.ItemMedia:
+			if len(event.Item.Content) != 1 || event.Item.Content[0].Type != chat.PartImage {
+				return chat.Unsupported("output", "OpenAI Responses compatibility exposes image results, not audio results")
 			}
+		case chat.ItemMessage:
+			for _, part := range event.Item.Content {
+				if part.Type != chat.PartText {
+					return chat.Unsupported("output", "Responses message output supports text parts only")
+				}
+			}
+		case chat.ItemFunctionCall, chat.ItemReasoning:
+		default:
+			return chat.Unsupported("output", "unsupported Responses output item")
 		}
-	case chat.ItemFunctionCall, chat.ItemReasoning:
-	default:
-		return chat.Unsupported("output", "unsupported Responses output item")
 	}
 	return nil
 }

@@ -74,7 +74,8 @@ func (s *chatStream) Started() bool { return s.writer.started }
 
 func (s *chatStream) writeChunk(delta chunkDelta, finish any) error {
 	choice := chunkChoice{Index: 0, Delta: delta, FinishReason: finish}
-	if s.includeUsage {
+	switch {
+	case s.includeUsage:
 		return s.writer.write("", chunkWithUsage{
 			ID:      s.meta.Response.ID,
 			Object:  "chat.completion.chunk",
@@ -82,14 +83,15 @@ func (s *chatStream) writeChunk(delta chunkDelta, finish any) error {
 			Model:   s.meta.Response.Target,
 			Choices: []chunkChoice{choice},
 		})
+	default:
+		return s.writer.write("", chunk{
+			ID:      s.meta.Response.ID,
+			Object:  "chat.completion.chunk",
+			Created: s.meta.Response.Created,
+			Model:   s.meta.Response.Target,
+			Choices: []chunkChoice{choice},
+		})
 	}
-	return s.writer.write("", chunk{
-		ID:      s.meta.Response.ID,
-		Object:  "chat.completion.chunk",
-		Created: s.meta.Response.Created,
-		Model:   s.meta.Response.Target,
-		Choices: []chunkChoice{choice},
-	})
 }
 
 // Event encodes one canonical event as a Chat Completions chunk.
@@ -117,9 +119,10 @@ func (s *chatStream) Event(event chat.Event) error {
 			s.roleSent = true
 		}
 		index := s.nextTool
-		if existing, ok := s.toolIndexes[event.CallID]; ok {
+		switch existing, ok := s.toolIndexes[event.CallID]; {
+		case ok:
 			index = existing
-		} else {
+		default:
 			s.toolIndexes[event.CallID] = index
 			s.nextTool++
 		}
@@ -182,9 +185,10 @@ func (s *chatStream) Event(event chat.Event) error {
 			}
 			index := s.nextTool
 			callID := event.Item.CallID
-			if existing, ok := s.toolIndexes[callID]; ok {
+			switch existing, ok := s.toolIndexes[callID]; {
+			case ok:
 				index = existing
-			} else {
+			default:
 				s.toolIndexes[callID] = index
 				s.nextTool++
 			}

@@ -119,28 +119,27 @@ func NewAdapter() internalprotocol.Adapter { return Adapter{} }
 
 // ValidateEvent checks whether event can be encoded for Chat Completions.
 func (Adapter) ValidateEvent(event chat.Event) error {
-	if event.Type == chat.EventActivity {
+	switch event.Type {
+	case chat.EventActivity:
 		return chat.Unsupported("output", "activity events are not supported on Chat Completions")
-	}
-	if event.Type != chat.EventItem {
-		return nil
-	}
-	switch event.Item.Type {
-	case chat.ItemReasoning:
-		return chat.Unsupported("output", "Chat Completions has no public reasoning-summary output mapping")
-	case chat.ItemMedia:
-		if len(event.Item.Content) != 1 || event.Item.Content[0].Type != chat.PartAudio {
-			return chat.Unsupported("output", "Chat Completions supports audio output here, not generated image output")
-		}
-	case chat.ItemMessage:
-		for _, part := range event.Item.Content {
-			if part.Type != chat.PartText && part.Type != chat.PartAudio {
-				return chat.Unsupported("output", "Chat Completions supports text and audio output here")
+	case chat.EventItem:
+		switch event.Item.Type {
+		case chat.ItemReasoning:
+			return chat.Unsupported("output", "Chat Completions has no public reasoning-summary output mapping")
+		case chat.ItemMedia:
+			if len(event.Item.Content) != 1 || event.Item.Content[0].Type != chat.PartAudio {
+				return chat.Unsupported("output", "Chat Completions supports audio output here, not generated image output")
 			}
+		case chat.ItemMessage:
+			for _, part := range event.Item.Content {
+				if part.Type != chat.PartText && part.Type != chat.PartAudio {
+					return chat.Unsupported("output", "Chat Completions supports text and audio output here")
+				}
+			}
+		case chat.ItemFunctionCall:
+		default:
+			return chat.Unsupported("output", "unsupported Chat Completions output item")
 		}
-	case chat.ItemFunctionCall:
-	default:
-		return chat.Unsupported("output", "unsupported Chat Completions output item")
 	}
 	return nil
 }

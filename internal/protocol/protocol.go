@@ -114,12 +114,15 @@ func (s *SSEWriter) Write(event string, value any) error {
 	if err := s.Start(); err != nil {
 		return err
 	}
-	if event != "" {
+	switch {
+	case event != "":
 		if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 			return fmt.Errorf("%w: %v", chat.ErrDelivery, err)
 		}
-	} else if _, err := fmt.Fprintf(s.w, "data: %s\n\n", data); err != nil {
-		return fmt.Errorf("%w: %v", chat.ErrDelivery, err)
+	default:
+		if _, err := fmt.Fprintf(s.w, "data: %s\n\n", data); err != nil {
+			return fmt.Errorf("%w: %v", chat.ErrDelivery, err)
+		}
 	}
 	s.w.(http.Flusher).Flush()
 	return nil
@@ -145,7 +148,8 @@ func (s *SSEWriter) Started() bool { return s.started }
 // WriteError writes the canonical error envelope for the selected protocol.
 func WriteError(w http.ResponseWriter, kind Kind, err error) {
 	apiErr := AsError(err)
-	if kind == Anthropic {
+	switch kind {
+	case Anthropic:
 		WriteJSON(w, apiErr.Status, map[string]any{
 			"type": "error",
 			"error": map[string]any{
@@ -153,19 +157,19 @@ func WriteError(w http.ResponseWriter, kind Kind, err error) {
 				"message": apiErr.Message,
 			},
 		})
-		return
+	default:
+		body := map[string]any{
+			"error": map[string]any{
+				"type":    apiErr.Type,
+				"code":    apiErr.Code,
+				"message": apiErr.Message,
+			},
+		}
+		if apiErr.Param != "" {
+			body["error"].(map[string]any)["param"] = apiErr.Param
+		}
+		WriteJSON(w, apiErr.Status, body)
 	}
-	body := map[string]any{
-		"error": map[string]any{
-			"type":    apiErr.Type,
-			"code":    apiErr.Code,
-			"message": apiErr.Message,
-		},
-	}
-	if apiErr.Param != "" {
-		body["error"].(map[string]any)["param"] = apiErr.Param
-	}
-	WriteJSON(w, apiErr.Status, body)
 }
 
 // AsError normalizes err into a chat.APIError with safe defaults.
@@ -173,7 +177,9 @@ func AsError(err error) *chat.Error {
 	if err == nil {
 		return &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error"}
 	}
-	if apiErr, ok := errors.AsType[*chat.Error](err); ok {
+	apiErr, ok := errors.AsType[*chat.Error](err)
+	switch {
+	case ok:
 		copy := *apiErr
 		if copy.Status < http.StatusBadRequest || copy.Status > 599 {
 			copy.Status = http.StatusInternalServerError
@@ -182,8 +188,9 @@ func AsError(err error) *chat.Error {
 		copy.Code = cmp.Or(copy.Code, "server_error")
 		copy.Message = cmp.Or(copy.Message, "internal server error")
 		return &copy
+	default:
+		return &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}
 	}
-	return &chat.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "server_error", Message: "internal server error", Err: err}
 }
 
 // AnthropicErrorType maps a canonical API error to an Anthropic error type string.
@@ -218,9 +225,10 @@ func InitialResponse(seed chat.Response, parsed *ParsedRequest) chat.Response {
 	if resp.Created == 0 {
 		resp.Created = time.Now().Unix()
 	}
-	if len(resp.Metadata) == 0 {
+	switch {
+	case len(resp.Metadata) == 0:
 		resp.Metadata = cloneMetadata(parsed.Metadata)
-	} else {
+	default:
 		resp.Metadata = cloneMetadata(resp.Metadata)
 	}
 	resp.Store = parsed.Retain
