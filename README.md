@@ -81,7 +81,7 @@ The handler matches exact paths. Mount it under a prefix with
 | `POST /chat/completions` | OpenAI Chat Completions | Text, image/file/audio input, text/audio output, client function calls, structured output, serial streaming |
 | `POST /responses` | Open Responses with an OpenAI Responses compatibility profile | Text/image/file/function/reasoning input, text/function/reasoning/generated-image output, typed OpenAI-style streaming |
 | `POST /messages` | Anthropic Messages | Text/image/document/file input, tool use/results, Anthropic message streaming |
-| `GET /models` | OpenAI model catalog shape | Enabled when `WithModels` is supplied; an empty list is returned otherwise |
+| `GET /models` | OpenAI model catalog shape | Projects `WithCatalog` keys as model IDs; an empty list is returned without a catalog |
 | `POST /audio/transcriptions` | OpenAI-compatible audio transcription | Enabled only with `WithTranscriber` |
 | `POST /audio/speech` | OpenAI-compatible speech | Enabled only with `WithSpeaker`; binary audio or typed audio SSE |
 | `POST /mcp` | MCP stateless Streamable HTTP | Enabled only with `WithMCP`; see "MCP endpoint" below |
@@ -113,6 +113,9 @@ chat.Info{
 	Tools:            true,
 	ClientTools:      true,
 	Description:      "Draws charts from tabular input.",
+	Tool:             "draw_chart", // nonempty exposes this agent through /mcp
+	Created:          1735689600,
+	OwnedBy:          "acme-agents",
 }
 ```
 
@@ -120,12 +123,15 @@ An image-producing Responses agent also sets `ImageGeneration: true`; the
 request must carry the compatibility profile's `image_generation` tool.
 
 The zero Info value means text in/text out with ordinary generation
-controls. `Description` is a human-readable summary that llmux surfaces as
-the MCP tool description when the agent is exposed through `/mcp`; it does
-not affect the chat endpoints. Info checks cover wire support, the selected
-agent, and configured services. `ClientTools` is required before a canonical
-function call can be handed to a client. Tools used internally by an agent
-never become client tool calls automatically.
+controls. `Description` is the single human-readable summary: llmux surfaces
+it as the MCP tool description when `Tool` is nonempty. `Tool` is the stable
+public MCP tool name (1–128 characters from `[A-Za-z0-9._-]`); empty means
+the agent is listed only in `/models`, never derived by sanitizing the
+resolver target. `Created` and `OwnedBy` flow into the `/models` envelope.
+Info checks cover wire support, the selected agent, and configured services.
+`ClientTools` is required before a canonical function call can be handed to
+a client. Tools used internally by an agent never become client tool calls
+automatically.
 
 Continuation is application-owned. Configure `WithContinuationStore` to load
 history for Responses `previous_response_id`. Persistence of new turns is
@@ -217,22 +223,43 @@ idempotency, continuation, retrieval, and `RunTimeout` durable execution.
 Cleanup after cancellation starts inside Finish via
 `context.WithTimeout(context.WithoutCancel(ctx), …)`.
 
-## MCP endpoint
+## Unified catalog and MCP endpoint
 
-`WithMCP` opt-in exposes application-owned agents as MCP tools at the exact
-path `/mcp`, serving protocol revision **2026-07-28** over **stateless
-Streamable HTTP** (official Go SDK `github.com/modelcontextprotocol/go-sdk`,
-version in `go.mod`). Chat-only applications need no MCP configuration, and
-the endpoint is disabled unless explicitly configured. Applications own any
-prefix mounting, exactly as for the chat endpoints.
+One authenticated `Catalog` callback feeds both `GET /models` and (when
+enabled) MCP discovery. Keys are resolver targets; values are `chat.Info`.
+Listing visibility never replaces Resolver authorization at invocation time.
+llmux reads the returned map and never mutates it or its nested values.
 
-Supported methods:
+```go
+handler := llmux.New(resolver,
+	llmux.WithCatalog(func(ctx context.Context) (map[string]chat.Info, error) {
+		// ctx carries the application's authentication. Return the
+		// targets this caller may see.
+		return map[string]chat.Info{
+			"agent/echo": {
+				Description: "Echoes a message.",
+				Tool:        "echo",
+				Created:     1735689600,
+				OwnedBy:     "acme-agents",
+			},
+		}, nil
+	}),
+	llmux.WithMCP(), // optional; without a catalog, /mcp lists no tools
+)
+```
+
+`WithMCP` enables the exact path `/mcp` over **stateless Streamable HTTP**
+(protocol revision **2026-07-28**, official Go SDK
+`github.com/modelcontextprotocol/go-sdk`). Option ordering does not matter:
+the transport is built after all options apply. Without `WithMCP`, chat-only
+applications are unchanged. Applications own any prefix mounting.
+
+Supported MCP methods:
 
 - `server/discover` — handled by the SDK; advertises the 2026-07-28 revision,
   server identity, and capabilities.
-- `tools/list` — the caller-specific catalog from the listing callback.
-- `tools/call` — invocation of a listed tool through the shared execution
-  path.
+- `tools/list` — catalog entries whose `Info.Tool` is nonempty.
+- `tools/call` — resolves the mapped target again and runs shared execution.
 
 `Transport` notes: no session storage and no sticky sessions —
 `Mcp-Session-Id` is neither read nor issued, `GET`/`DELETE` return 405, and
@@ -240,26 +267,12 @@ tool results are returned as one `application/json` body. Requests
 identifying older revisions are rejected; legacy `initialize` handshakes
 cannot proceed against this endpoint.
 
-```go
-handler := llmux.New(resolver,
-	llmux.WithMCP(llmux.MCPConfig{
-		List: func(ctx context.Context) ([]llmux.MCPEntry, error) {
-			// ctx carries the application's authentication. Return the
-			// entries this caller may see and invoke.
-			return []llmux.MCPEntry{
-				{Tool: "echo", Target: "agent/echo", Info: info},
-			}, nil
-		},
-	}),
-)
-```
-
-Each entry binds a stable MCP tool name to a Resolver target and reuses
-`chat.Info`; `Info.Description` becomes the tool description. Tool names must
-be 1–128 characters from `[A-Za-z0-9._-]`, are never derived from targets by
-sanitization, and must be unique — duplicates are rejected (logged, HTTP 500),
-never silently overwritten. Listings are returned in sorted name order and
-every cacheable result (`server/discover`, `tools/list`) is marked
+MCP projection uses `Info.Tool` as the public name and `Info.Description` as
+its description. Tool names must be unique and valid
+(`[A-Za-z0-9._-]`, 1–128 characters) — duplicates and invalid names are
+rejected (logged, HTTP 500), never silently overwritten. Listings are
+returned in sorted name order (`/models` by ID; MCP by tool name). Every
+cacheable MCP result (`server/discover`, `tools/list`) is marked
 `cacheScope: "private"` with a zero TTL so caller-specific catalogs cannot
 leak across identities.
 
@@ -320,10 +333,9 @@ Stateless MCP is designed to sit behind the host application's middleware:
 - Listing and invocation each perform their own authorization checks under
   the same authenticated identity.
 
-See [`examples/mcp`](examples/mcp) for an agent, resolver with
-`Info.Description`, authenticated listing, MCP configuration, prefix
-mounting, and an illustrative (deliberately not production) authentication
-wrapper.
+See [`examples/mcp`](examples/mcp) for an agent, unified catalog,
+authenticated listing, optional MCP enablement, prefix mounting, and an
+illustrative (deliberately not production) authentication wrapper.
 
 ## Media and audio
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/kelindar/llmux/chat"
@@ -20,7 +21,9 @@ type Option func(*Handler)
 // not create a listener and is safe for concurrent requests.
 type Handler struct {
 	resolver     chat.Resolver
-	catalog      []chat.Model
+	catalog      Catalog
+	mcpEnabled   bool
+	mcp          *mcp.Transport
 	limits       chat.Limits
 	assets       chat.AssetResolver
 	continuation chat.ContinuationStore
@@ -29,8 +32,15 @@ type Handler struct {
 	transcriber  Transcriber
 	speaker      Speaker
 	errorLog     func(context.Context, error)
-	mcp          *mcp.Transport
 }
+
+// Catalog returns the caller-visible unified agent catalog: resolver targets
+// mapped to their Info. It runs once per catalog-backed request (GET /models
+// and, when enabled, /mcp) with the request context, so authorization belongs
+// inside the callback. Keys are the targets accepted by the Resolver; listing
+// visibility never replaces the Resolver's invocation authorization. llmux
+// reads the returned map and never mutates it or its values.
+type Catalog func(context.Context) (map[string]chat.Info, error)
 
 // New builds a Handler with the given resolver and options.
 func New(resolver chat.Resolver, options ...Option) *Handler {
@@ -41,14 +51,19 @@ func New(resolver chat.Resolver, options ...Option) *Handler {
 		}
 	}
 	h.limits = h.limits.Normalize()
+	// Dependent components are initialized after all options are applied so
+	// option ordering never matters. MCP enabled without a catalog projects
+	// an empty tool catalog.
+	if h.mcpEnabled {
+		h.mcp = mcp.NewTransport(hostAdapter{h: h}, mcp.Config{Catalog: mcp.Catalog(h.catalog)})
+	}
 	return h
 }
 
-// WithModels registers catalog entries for GET /models.
-func WithModels(models ...chat.Model) Option {
-	return func(h *Handler) {
-		h.catalog = append([]chat.Model(nil), models...)
-	}
+// WithCatalog registers the authenticated catalog callback shared by
+// GET /models and (when enabled) /mcp. See Catalog.
+func WithCatalog(list Catalog) Option {
+	return func(h *Handler) { h.catalog = list }
 }
 
 // WithLimits sets request, media, and output size limits for the handler.
@@ -155,23 +170,42 @@ func methodError(method string) *chat.Error {
 	return &chat.Error{Status: http.StatusMethodNotAllowed, Type: "invalid_request_error", Code: "method_not_allowed", Message: "method " + method + " is not allowed"}
 }
 
-func (h *Handler) serveModels(w http.ResponseWriter, _ *http.Request) {
-	type catalogEntry struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
+// serveModels projects the unified catalog into the OpenAI model list
+// envelope. Catalog keys are the model IDs; entries are returned in sorted
+// ID order. Without a configured catalog the list is empty.
+func (h *Handler) serveModels(w http.ResponseWriter, r *http.Request) {
+	catalog, err := h.projectCatalog(r.Context())
+	if err != nil {
+		h.logError(r.Context(), err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
-	data := make([]catalogEntry, len(h.catalog))
-	for i, model := range h.catalog {
-		data[i] = catalogEntry{
-			ID:      model.ID,
-			Object:  "model",
-			Created: model.Created,
-			OwnedBy: model.OwnedBy,
+	ids := make([]string, 0, len(catalog))
+	for id := range catalog {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	data := make([]map[string]any, len(ids))
+	for i, id := range ids {
+		info := catalog[id]
+		data[i] = map[string]any{
+			"id":       id,
+			"object":   "model",
+			"created":  info.Created,
+			"owned_by": info.OwnedBy,
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// projectCatalog fetches the caller-visible catalog for one request. A nil
+// catalog callback projects an empty catalog; catalog failures are returned
+// as operational errors and never exposed.
+func (h *Handler) projectCatalog(ctx context.Context) (map[string]chat.Info, error) {
+	if h.catalog == nil {
+		return nil, nil
+	}
+	return h.catalog(ctx)
 }
 
 func (h *Handler) readBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {

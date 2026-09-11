@@ -31,26 +31,18 @@ const ProtocolVersion = "2026-07-28"
 // is not configurable and no other arguments are supported.
 const toolInputSchema = `{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`
 
-// Entry is one agent exposed as an MCP tool.
-type Entry struct {
-	// Tool is the stable MCP tool name, validated at catalog build time.
-	Tool string
-	// Target is the agent target resolved independently at invocation.
-	Target string
-	// Info is reused as the tool description source; no other representation
-	// exists. Info.Description becomes the MCP tool description.
-	Info chat.Info
-}
-
-// Lister returns the entries exposed to the authenticated caller. It runs
-// once per MCP request with the request context; authorization belongs
-// inside the callback.
-type Lister func(context.Context) ([]Entry, error)
+// Catalog returns the caller-visible unified agent catalog: resolver targets
+// mapped to their Info. It runs once per MCP request with the request
+// context; authorization belongs inside the callback. Only entries with a
+// nonempty Info.Tool become MCP tools, under Info.Tool as the public name.
+// A nil catalog function is treated as an empty catalog.
+type Catalog func(context.Context) (map[string]chat.Info, error)
 
 // Config configures a Transport.
 type Config struct {
-	// List returns the caller-specific agent catalog. Required.
-	List Lister
+	// Catalog returns the caller-specific unified catalog. It may be nil,
+	// which yields an empty tool catalog rather than a hidden failure.
+	Catalog Catalog
 }
 
 // Host is the execution seam provided by the llmux Handler. It keeps the MCP
@@ -80,7 +72,7 @@ type Host interface {
 // Transport owns the stateless Streamable HTTP endpoint for one Handler.
 type Transport struct {
 	host    Host
-	list    Lister
+	catalog Catalog
 	handler *sdkmcp.StreamableHTTPHandler
 	cache   *sdkmcp.SchemaCache
 }
@@ -90,7 +82,7 @@ type serverKey struct{}
 
 // NewTransport builds the MCP endpoint transport.
 func NewTransport(host Host, config Config) *Transport {
-	t := &Transport{host: host, list: config.List, cache: sdkmcp.NewSchemaCache()}
+	t := &Transport{host: host, catalog: config.Catalog, cache: sdkmcp.NewSchemaCache()}
 	t.handler = sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server {
 		server, _ := r.Context().Value(serverKey{}).(*sdkmcp.Server)
 		return server
@@ -107,17 +99,21 @@ func NewTransport(host Host, config Config) *Transport {
 	return t
 }
 
-// ServeHTTP serves one MCP request. The listing callback runs exactly once
-// with the authenticated request context; the resolved catalog is pinned to
-// this request and never shared across callers or identities.
+// ServeHTTP serves one MCP request. The catalog callback runs exactly once
+// with the authenticated request context; the projected tool set is pinned
+// to this request and never shared across callers or identities.
 func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	entries, err := t.list(r.Context())
-	if err != nil {
-		t.host.LogError(r.Context(), err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	var catalog map[string]chat.Info
+	if t.catalog != nil {
+		var err error
+		catalog, err = t.catalog(r.Context())
+		if err != nil {
+			t.host.LogError(r.Context(), err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	}
-	server, err := t.buildServer(entries)
+	server, err := t.buildServer(catalog)
 	if err != nil {
 		t.host.LogError(r.Context(), err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -127,24 +123,46 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	t.handler.ServeHTTP(w, r.WithContext(ctx))
 }
 
-// buildServer validates the catalog and constructs one revision-pinned
-// server exposing the entries as tools. Tools are added in sorted name order
-// so listing is deterministic.
-func (t *Transport) buildServer(entries []Entry) (*sdkmcp.Server, error) {
-	sorted := slices.Clone(entries)
-	slices.SortFunc(sorted, func(a, b Entry) int { return strings.Compare(a.Tool, b.Tool) })
-	seen := make(map[string]struct{}, len(sorted))
-	for _, entry := range sorted {
-		if err := validateToolName(entry.Tool); err != nil {
+// entry is one projected tool: the catalog target bound to its public tool
+// name and description source.
+type entry struct {
+	tool   string
+	target string
+	info   chat.Info
+}
+
+// projectTool filters the unified catalog down to MCP-exposed agents. The
+// application's map and nested values are only read, never mutated.
+func projectTool(target string, info chat.Info) (entry, bool) {
+	if strings.TrimSpace(info.Tool) == "" {
+		return entry{}, false
+	}
+	return entry{tool: info.Tool, target: target, info: info}, true
+}
+
+// buildServer validates the projected catalog and constructs one
+// revision-pinned server exposing the entries as tools. Tools are added in
+// sorted name order so listing is deterministic.
+func (t *Transport) buildServer(catalog map[string]chat.Info) (*sdkmcp.Server, error) {
+	entries := make([]entry, 0, len(catalog))
+	for target, info := range catalog {
+		if projected, ok := projectTool(target, info); ok {
+			entries = append(entries, projected)
+		}
+	}
+	slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.tool, b.tool) })
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if err := validateToolName(e.tool); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(entry.Target) == "" {
-			return nil, fmt.Errorf("llmux: mcp tool %q has an empty target", entry.Tool)
+		if strings.TrimSpace(e.target) == "" {
+			return nil, fmt.Errorf("llmux: mcp tool %q has an empty target", e.tool)
 		}
-		if _, exists := seen[entry.Tool]; exists {
-			return nil, fmt.Errorf("llmux: duplicate mcp tool name %q", entry.Tool)
+		if _, exists := seen[e.tool]; exists {
+			return nil, fmt.Errorf("llmux: duplicate mcp tool name %q", e.tool)
 		}
-		seen[entry.Tool] = struct{}{}
+		seen[e.tool] = struct{}{}
 	}
 	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "llmux", Version: version()}, &sdkmcp.ServerOptions{
 		// Serve exactly one revision. server/discover advertises this version
@@ -161,13 +179,13 @@ func (t *Transport) buildServer(entries []Entry) (*sdkmcp.Server, error) {
 		},
 		SchemaCache: t.cache,
 	})
-	for _, entry := range sorted {
+	for _, e := range entries {
 		tool := &sdkmcp.Tool{
-			Name:        entry.Tool,
-			Description: entry.Info.Description,
+			Name:        e.tool,
+			Description: e.info.Description,
 			InputSchema: json.RawMessage(toolInputSchema),
 		}
-		server.AddTool(tool, t.callAgentTool(entry))
+		server.AddTool(tool, t.callAgentTool(e))
 	}
 	return server, nil
 }
@@ -195,7 +213,7 @@ func validateToolName(name string) error {
 // callAgentTool returns the SDK tool handler for one entry. Arguments are
 // validated strictly against the fixed schema, then the entry target is
 // resolved and executed through the shared Host machinery.
-func (t *Transport) callAgentTool(entry Entry) sdkmcp.ToolHandler {
+func (t *Transport) callAgentTool(e entry) sdkmcp.ToolHandler {
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		if int64(len(req.Params.Arguments)) > t.host.Limits().MaxRequestBytes {
 			// Malformed requests are protocol errors, not tool results.
@@ -208,7 +226,7 @@ func (t *Transport) callAgentTool(entry Entry) sdkmcp.ToolHandler {
 		if err != nil {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
 		}
-		result, runErr := t.runAgentTool(ctx, entry, message)
+		result, runErr := t.runAgentTool(ctx, e, message)
 		if runErr != nil {
 			t.host.LogError(ctx, runErr)
 			return &sdkmcp.CallToolResult{
@@ -223,17 +241,17 @@ func (t *Transport) callAgentTool(entry Entry) sdkmcp.ToolHandler {
 // runAgentTool maps one validated tool invocation onto the canonical request
 // path: resolve, validate, prepare, accept, execute. The response returned by
 // Execute has already been finalized through lifecycle Finish.
-func (t *Transport) runAgentTool(ctx context.Context, entry Entry, message string) (*sdkmcp.CallToolResult, error) {
+func (t *Transport) runAgentTool(ctx context.Context, e entry, message string) (*sdkmcp.CallToolResult, error) {
 	parsed := protocol.ParsedRequest{
 		Request: chat.Request{
-			Target: entry.Target,
+			Target: e.target,
 			Input:  []chat.Item{chat.MessageItem(chat.RoleUser, chat.TextPart(message))},
 			Output: chat.OutputSpec{Modalities: chat.ModalityText},
 		},
 	}
 	parsed.Turn = parsed.Request.Input
 
-	agent, info, err := t.host.Resolve(ctx, entry.Target)
+	agent, info, err := t.host.Resolve(ctx, e.target)
 	if err != nil {
 		return nil, err
 	}

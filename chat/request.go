@@ -218,7 +218,9 @@ func (l Limits) Normalize() Limits {
 }
 
 // Info describes the selected agent for clients: a human-readable
-// description plus what the agent can actually execute.
+// description plus what the agent can actually execute. It is also the
+// unified catalog entry: applications return caller-visible targets mapped
+// to Info, and llmux projects that one catalog into GET /models and MCP.
 type Info struct {
 	InputModalities    Modality
 	OutputModalities   Modality
@@ -235,6 +237,18 @@ type Info struct {
 	// implementations should set it; llmux surfaces it as the MCP tool
 	// description when the agent is exposed through /mcp.
 	Description string
+
+	// Tool is the stable public MCP tool name for this agent. Empty means
+	// the agent is not exposed through MCP; nonempty exposes it, with the
+	// name owned by the application (1-128 characters from [A-Za-z0-9._-],
+	// unique per catalog). It is never derived from the resolver target.
+	Tool string
+
+	// Created is the Unix creation time in seconds shown in the model
+	// catalog. Zero is rendered as the zero time value.
+	Created int64
+	// OwnedBy is the owner label shown in the model catalog.
+	OwnedBy string
 }
 
 // GenerationControl identifies a generation control understood by an agent.

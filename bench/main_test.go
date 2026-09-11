@@ -30,7 +30,9 @@ func TestServeModels(t *testing.T) {
 		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, nil
 		}), chat.Info{}, nil
-	}), llmux.WithModels(chat.Model{ID: "bench"}))
+	}), llmux.WithCatalog(func(context.Context) (map[string]chat.Info, error) {
+		return map[string]chat.Info{"bench": {}}, nil
+	}))
 	recorder := serve(handler, "/models", nil, "GET")
 	require.Equal(t, http.StatusOK, recorder.Code)
 }

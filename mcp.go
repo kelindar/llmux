@@ -13,52 +13,16 @@ import (
 // on this endpoint. See the README for the supported-revision policy.
 const mcpProtocolVersion = mcp.ProtocolVersion
 
-// MCPEntry is one agent exposed as a tool through /mcp.
-type MCPEntry struct {
-	// Tool is the stable MCP tool name. It must be 1-128 characters from
-	// [A-Za-z0-9._-] and unique across the catalog. Names are never derived
-	// from Target; applications choose and own them.
-	Tool string
-	// Target is the agent target passed to the Resolver when the tool is
-	// invoked. Resolution at invocation time is independent of listing.
-	Target string
-	// Info is the agent information returned by the Resolver. Info.Description
-	// becomes the MCP tool description; no other description source exists.
-	Info chat.Info
-}
-
-// MCPConfig configures the optional /mcp endpoint (exact path /mcp, served
-// only when WithMCP is applied; applications own any prefix mounting). The
-// zero config never routes /mcp, so existing chat-only applications are
-// unaffected.
-type MCPConfig struct {
-	// List returns the agents exposed to the authenticated caller. It runs
-	// once per /mcp request with the request context, so authorization
-	// belongs inside the callback. Returned entries are copied; mutating
-	// them afterward has no effect.
-	List func(context.Context) ([]MCPEntry, error)
-}
-
-// WithMCP enables the /mcp endpoint. See MCPConfig for details.
-func WithMCP(config MCPConfig) Option {
-	return func(h *Handler) {
-		if config.List == nil {
-			panic("llmux: WithMCP requires MCPConfig.List")
-		}
-		h.mcp = mcp.NewTransport(hostAdapter{h: h}, mcp.Config{
-			List: func(ctx context.Context) ([]mcp.Entry, error) {
-				entries, err := config.List(ctx)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]mcp.Entry, len(entries))
-				for i, entry := range entries {
-					out[i] = mcp.Entry{Tool: entry.Tool, Target: entry.Target, Info: entry.Info}
-				}
-				return out, nil
-			},
-		})
-	}
+// WithMCP enables the optional MCP endpoint at the exact path /mcp (over
+// stateless Streamable HTTP). It takes no arguments: the exposed tools come
+// from the unified catalog configured with WithCatalog, filtered to entries
+// whose Info.Tool is nonempty. Enabling MCP without a catalog yields an
+// empty tool catalog, never implicit enumeration.
+//
+// The transport is constructed after all options are applied, so option
+// ordering does not matter.
+func WithMCP() Option {
+	return func(h *Handler) { h.mcpEnabled = true }
 }
 
 // serveMCP delegates to the internal MCP transport.

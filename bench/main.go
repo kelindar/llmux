@@ -47,7 +47,9 @@ func main() {
 		return agent, chat.Info{}, nil
 	})
 	handler := llmux.New(resolver,
-		llmux.WithModels(chat.Model{ID: "bench"}),
+		llmux.WithCatalog(func(context.Context) (map[string]chat.Info, error) {
+			return map[string]chat.Info{"bench": {}}, nil
+		}),
 		llmux.WithTranscriber(llmux.TranscriberFunc(func(context.Context, llmux.TranscriptionRequest) (llmux.Transcription, error) {
 			return llmux.Transcription{Text: "ok"}, nil
 		})),

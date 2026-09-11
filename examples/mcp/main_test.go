@@ -37,17 +37,30 @@ func TestMCPEndpoint(t *testing.T) {
 		listed, err := session.ListTools(context.Background(), nil)
 		require.NoError(t, err)
 		require.Len(t, listed.Tools, 1)
-		assert.Equal(t, "echo_alice", listed.Tools[0].Name)
-		assert.Equal(t, "Echoes a message (for Alice).", listed.Tools[0].Description)
+		assert.Equal(t, "echo", listed.Tools[0].Name)
+		assert.Equal(t, "Echoes a message back as assistant text.", listed.Tools[0].Description)
 
 		call, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-			Name:      "echo_alice",
+			Name:      "echo",
 			Arguments: map[string]any{"message": "hello"},
 		})
 		require.NoError(t, err)
 		require.False(t, call.IsError)
 		require.Len(t, call.Content, 1)
 		assert.Equal(t, "echo: hello", call.Content[0].(*mcp.TextContent).Text)
+
+		models, err := http.Get(server.URL + "/v1/models")
+		require.NoError(t, err)
+		defer models.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, models.StatusCode)
+
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/v1/models", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer alice-token")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 

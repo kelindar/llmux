@@ -133,16 +133,25 @@ func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
-func TestMCPDiscoveryListAndCall(t *testing.T) {
+// withTools registers a static unified catalog exposing entries as MCP tools
+// and enables the endpoint.
+func withTools(entries map[string]chat.Info) []Option {
+	return []Option{
+		WithCatalog(func(context.Context) (map[string]chat.Info, error) { return entries, nil }),
+		WithMCP(),
+	}
+}
+
+func TestMCPDiscovery(t *testing.T) {
 	agent := newMCPTestAgent()
-	listing := func(ctx context.Context) ([]MCPEntry, error) {
+	catalog := func(ctx context.Context) (map[string]chat.Info, error) {
 		require.Equal(t, "user-a", mcpCaller(ctx), "listing must receive the authenticated context")
-		return []MCPEntry{
-			{Tool: "zeta", Target: "agent/zeta", Info: chat.Info{Description: "last"}},
-			{Tool: "alpha", Target: "agent/alpha", Info: chat.Info{Description: "first"}},
+		return map[string]chat.Info{
+			"agent/zeta":  {Description: "last", Tool: "zeta"},
+			"agent/alpha": {Description: "first", Tool: "alpha"},
 		}, nil
 	}
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: listing}))
+	fixture := newMCPFixture(t, agent, WithCatalog(catalog), WithMCP())
 	session := fixture.connect(t, "token-a")
 
 	// server/discover runs inside Connect; a stateless session is live
@@ -185,19 +194,19 @@ func TestMCPDiscoveryListAndCall(t *testing.T) {
 	}
 }
 
-func TestMCPCallerSpecificListingAndCacheIsolation(t *testing.T) {
+func TestMCPCallerListing(t *testing.T) {
 	agent := newMCPTestAgent()
-	listing := func(ctx context.Context) ([]MCPEntry, error) {
+	catalog := func(ctx context.Context) (map[string]chat.Info, error) {
 		switch mcpCaller(ctx) {
 		case "user-a":
-			return []MCPEntry{{Tool: "tool-a", Target: "agent/a", Info: chat.Info{Description: "only for a"}}}, nil
+			return map[string]chat.Info{"agent/a": {Description: "only for a", Tool: "tool-a"}}, nil
 		case "user-b":
-			return []MCPEntry{{Tool: "tool-b", Target: "agent/b", Info: chat.Info{Description: "only for b"}}}, nil
+			return map[string]chat.Info{"agent/b": {Description: "only for b", Tool: "tool-b"}}, nil
 		default:
 			return nil, nil
 		}
 	}
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: listing}))
+	fixture := newMCPFixture(t, agent, WithCatalog(catalog), WithMCP())
 
 	for _, test := range []struct{ token, tool string }{
 		{"token-a", "tool-a"},
@@ -283,11 +292,11 @@ func (f *mcpFixture) rawToolsList(t *testing.T, token string) map[string]any {
 	return envelope.Result
 }
 
-func TestMCPFixedInputSchema(t *testing.T) {
+func TestMCPInputSchema(t *testing.T) {
 	agent := newMCPTestAgent()
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo", Info: chat.Info{Description: "echo"}}}, nil
-	}}))
+	fixture := newMCPFixture(t, agent, withTools(map[string]chat.Info{
+		"agent/echo": {Description: "echo", Tool: "echo"},
+	})...)
 	session := fixture.connect(t, "token-a")
 
 	result, err := session.ListTools(context.Background(), nil)
@@ -328,14 +337,14 @@ func TestMCPFixedInputSchema(t *testing.T) {
 	assert.Equal(t, int32(0), agent.runs.Load(), "no malformed request may reach the agent")
 }
 
-func TestMCPUnknownAndUnauthorizedTools(t *testing.T) {
+func TestMCPUnauthorized(t *testing.T) {
 	agent := newMCPTestAgent()
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: func(ctx context.Context) ([]MCPEntry, error) {
+	fixture := newMCPFixture(t, agent, WithCatalog(func(ctx context.Context) (map[string]chat.Info, error) {
 		if mcpCaller(ctx) != "user-a" {
 			return nil, nil
 		}
-		return []MCPEntry{{Tool: "listed", Target: "agent/ok", Info: chat.Info{Description: "ok"}}}, nil
-	}}))
+		return map[string]chat.Info{"agent/ok": {Description: "ok", Tool: "listed"}}, nil
+	}), WithMCP())
 	session := fixture.connect(t, "token-a")
 
 	t.Run("unknown tool", func(t *testing.T) {
@@ -348,9 +357,7 @@ func TestMCPUnknownAndUnauthorizedTools(t *testing.T) {
 	t.Run("listed but resolver denies target", func(t *testing.T) {
 		denying := New(chat.Resolver(func(_ context.Context, target string) (chat.Agent, chat.Info, error) {
 			return nil, chat.Info{}, &chat.Error{Status: http.StatusForbidden, Type: "permission_error", Code: "target_forbidden", Message: "you may not call this agent"}
-		}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-			return []MCPEntry{{Tool: "listed", Target: "agent/denied", Info: chat.Info{Description: "ok"}}}, nil
-		}}))
+		}), withTools(map[string]chat.Info{"agent/denied": {Description: "ok", Tool: "listed"}})...)
 		server := httptest.NewServer(denying)
 		t.Cleanup(server.Close)
 		client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
@@ -368,9 +375,8 @@ func TestMCPUnknownAndUnauthorizedTools(t *testing.T) {
 	t.Run("resolver failure without public error is sanitized", func(t *testing.T) {
 		broken := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 			return nil, chat.Info{}, errors.New("database connection string leaked")
-		}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-			return []MCPEntry{{Tool: "listed", Target: "agent/x", Info: chat.Info{Description: "ok"}}}, nil
-		}}), WithErrorLog(func(context.Context, error) {}))
+		}), append(withTools(map[string]chat.Info{"agent/x": {Description: "ok", Tool: "listed"}}),
+			WithErrorLog(func(context.Context, error) {}))...)
 		server := httptest.NewServer(broken)
 		t.Cleanup(server.Close)
 		client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
@@ -389,9 +395,7 @@ func TestMCPUnknownAndUnauthorizedTools(t *testing.T) {
 
 func TestMCPUnauthenticatedChallenge(t *testing.T) {
 	agent := newMCPTestAgent()
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+	fixture := newMCPFixture(t, agent, withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)
 	resp, err := http.Post(fixture.endpoint(), "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -400,28 +404,28 @@ func TestMCPUnauthenticatedChallenge(t *testing.T) {
 	assert.Equal(t, int32(0), agent.runs.Load())
 }
 
-func TestMCPAuthenticatedContextPropagation(t *testing.T) {
+func TestMCPAuthContext(t *testing.T) {
 	agent := newMCPTestAgent()
 	var mu sync.Mutex
 	var identities []string
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: func(ctx context.Context) ([]MCPEntry, error) {
+	fixture := newMCPFixture(t, agent, WithCatalog(func(ctx context.Context) (map[string]chat.Info, error) {
 		mu.Lock()
 		identities = append(identities, "list:"+mcpCaller(ctx))
 		mu.Unlock()
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+		return map[string]chat.Info{"agent/echo": {Tool: "echo"}}, nil
+	}), WithMCP())
 	// The resolver records the identity observed at invocation time.
 	observing := New(chat.Resolver(func(ctx context.Context, target string) (chat.Agent, chat.Info, error) {
 		mu.Lock()
 		identities = append(identities, "resolve:"+mcpCaller(ctx))
 		mu.Unlock()
 		return agent, chat.Info{}, nil
-	}), WithMCP(MCPConfig{List: func(ctx context.Context) ([]MCPEntry, error) {
+	}), WithCatalog(func(ctx context.Context) (map[string]chat.Info, error) {
 		mu.Lock()
 		identities = append(identities, "list:"+mcpCaller(ctx))
 		mu.Unlock()
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+		return map[string]chat.Info{"agent/echo": {Tool: "echo"}}, nil
+	}), WithMCP())
 	_ = fixture // fixture guarantees the auth wrapper pattern; observing is wrapped the same way
 	auth := &mcpAuth{next: observing, identity: map[string]string{"token-a": "user-a"}}
 	server := httptest.NewServer(auth)
@@ -454,31 +458,26 @@ func TestMCPAuthenticatedContextPropagation(t *testing.T) {
 	assert.True(t, sawResolve, "invocation must observe the same authenticated identity")
 }
 
-func TestMCPDuplicateAndInvalidCatalogNames(t *testing.T) {
+func TestMCPCatalogNames(t *testing.T) {
 	agent := newMCPTestAgent()
 	for _, test := range []struct {
 		name     string
-		entries  []MCPEntry
+		catalog  map[string]chat.Info
 		fragment string
 	}{
 		{
 			name:     "duplicate names",
-			entries:  []MCPEntry{{Tool: "dup", Target: "a"}, {Tool: "dup", Target: "b"}},
+			catalog:  map[string]chat.Info{"a": {Tool: "dup"}, "b": {Tool: "dup"}},
 			fragment: "duplicate",
 		},
 		{
 			name:     "invalid characters",
-			entries:  []MCPEntry{{Tool: "bad name!", Target: "a"}},
+			catalog:  map[string]chat.Info{"a": {Tool: "bad name!"}},
 			fragment: "invalid characters",
 		},
 		{
-			name:     "empty name",
-			entries:  []MCPEntry{{Tool: "", Target: "a"}},
-			fragment: "empty",
-		},
-		{
 			name:     "empty target",
-			entries:  []MCPEntry{{Tool: "ok", Target: "  "}},
+			catalog:  map[string]chat.Info{"  ": {Tool: "ok"}},
 			fragment: "empty target",
 		},
 	} {
@@ -486,9 +485,9 @@ func TestMCPDuplicateAndInvalidCatalogNames(t *testing.T) {
 			var logged atomic.Int32
 			handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 				return agent, chat.Info{}, nil
-			}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-				return test.entries, nil
-			}}), WithErrorLog(func(context.Context, error) { logged.Add(1) }))
+			}), WithCatalog(func(context.Context) (map[string]chat.Info, error) {
+				return test.catalog, nil
+			}), WithMCP(), WithErrorLog(func(context.Context, error) { logged.Add(1) }))
 			server := httptest.NewServer(handler)
 			t.Cleanup(server.Close)
 
@@ -509,11 +508,9 @@ func TestMCPDuplicateAndInvalidCatalogNames(t *testing.T) {
 	assert.Equal(t, int32(0), agent.runs.Load())
 }
 
-func TestMCPStatelessIndependentRequests(t *testing.T) {
+func TestMCPStateless(t *testing.T) {
 	agent := newMCPTestAgent()
-	fixture := newMCPFixture(t, agent, WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+	fixture := newMCPFixture(t, agent, withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)
 	// Every response is a completed tool result with no session affinity.
 	result := fixture.rawToolsList(t, "token-a")
 	require.NotNil(t, result["tools"])
@@ -545,13 +542,11 @@ func f_clientDo(t *testing.T, f *mcpFixture, req *http.Request) (*http.Response,
 	return f.http.Client().Do(req)
 }
 
-func TestMCPRoutingAndPrefixMounting(t *testing.T) {
+func TestMCPRouting(t *testing.T) {
 	agent := newMCPTestAgent()
 	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return agent, chat.Info{}, nil
-	}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+	}), withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)
 
 	t.Run("disabled by default", func(t *testing.T) {
 		plain := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
@@ -589,13 +584,11 @@ func TestMCPRoutingAndPrefixMounting(t *testing.T) {
 	})
 }
 
-func TestMCPOldRevisionRejected(t *testing.T) {
+func TestMCPOldRevision(t *testing.T) {
 	agent := newMCPTestAgent()
 	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return agent, chat.Info{}, nil
-	}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+	}), withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -613,13 +606,11 @@ func TestMCPOldRevisionRejected(t *testing.T) {
 	assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain")
 }
 
-func TestMCPJSONRPCIDIsNotIdempotencyKey(t *testing.T) {
+func TestMCPRequestID(t *testing.T) {
 	agent := newMCPTestAgent()
 	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return agent, chat.Info{}, nil
-	}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+	}), withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -643,7 +634,7 @@ func TestMCPJSONRPCIDIsNotIdempotencyKey(t *testing.T) {
 	assert.Equal(t, int32(2), agent.runs.Load(), "the same JSON-RPC request ID must execute twice")
 }
 
-func TestMCPOutputMappingAndLimits(t *testing.T) {
+func TestMCPOutputLimits(t *testing.T) {
 	t.Run("output order preserved", func(t *testing.T) {
 		agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 			if err := emit(chat.TextDelta("one ")); err != nil {
@@ -728,9 +719,9 @@ func newPlainMCPSession(t *testing.T, agent chat.Agent, options ...Option) *sdkm
 	t.Helper()
 	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return agent, chat.Info{}, nil
-	}), append(options, WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo", Info: chat.Info{Description: "echo"}}}, nil
-	}}))...)
+	}), append(options, withTools(map[string]chat.Info{
+		"agent/echo": {Description: "echo", Tool: "echo"},
+	})...)...)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
@@ -808,9 +799,7 @@ func TestMCPLifecycle(t *testing.T) {
 	agent := newMCPTestAgent()
 	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return agent, chat.Info{}, nil
-	}), WithLifecycle(life), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-		return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-	}}))
+	}), append([]Option{WithLifecycle(life)}, withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)...)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
@@ -856,7 +845,13 @@ func TestMCPLifecycle(t *testing.T) {
 
 func TestMCPExecutionLimits(t *testing.T) {
 	t.Run("empty listing is valid", func(t *testing.T) {
-		session := newPlainMCPSessionWithEntries(t, newMCPTestAgent(), nil)
+		session := newPlainMCPSessionWithCatalog(t, newMCPTestAgent(), map[string]chat.Info{})
+		result, err := session.ListTools(context.Background(), nil)
+		require.NoError(t, err)
+		assert.Empty(t, result.Tools)
+	})
+	t.Run("nil catalog yields empty tools", func(t *testing.T) {
+		session := newPlainMCPSessionWithCatalog(t, newMCPTestAgent(), nil)
 		result, err := session.ListTools(context.Background(), nil)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tools)
@@ -865,9 +860,7 @@ func TestMCPExecutionLimits(t *testing.T) {
 		agent := newMCPTestAgent()
 		handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 			return agent, chat.Info{}, nil
-		}), WithLimits(chat.Limits{MaxRequestBytes: 64}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) {
-			return []MCPEntry{{Tool: "echo", Target: "agent/echo"}}, nil
-		}}))
+		}), append([]Option{WithLimits(chat.Limits{MaxRequestBytes: 64})}, withTools(map[string]chat.Info{"agent/echo": {Tool: "echo"}})...)...)
 		server := httptest.NewServer(handler)
 		t.Cleanup(server.Close)
 		client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
@@ -880,11 +873,17 @@ func TestMCPExecutionLimits(t *testing.T) {
 	})
 }
 
-func newPlainMCPSessionWithEntries(t *testing.T, agent chat.Agent, entries []MCPEntry) *sdkmcp.ClientSession {
+func newPlainMCPSessionWithCatalog(t *testing.T, agent chat.Agent, catalog map[string]chat.Info) *sdkmcp.ClientSession {
 	t.Helper()
+	options := []Option{WithMCP()}
+	if catalog != nil {
+		options = append([]Option{WithCatalog(func(context.Context) (map[string]chat.Info, error) {
+			return catalog, nil
+		})}, options...)
+	}
 	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
 		return agent, chat.Info{}, nil
-	}), WithMCP(MCPConfig{List: func(context.Context) ([]MCPEntry, error) { return entries, nil }}))
+	}), options...)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
@@ -894,7 +893,7 @@ func newPlainMCPSessionWithEntries(t *testing.T, agent chat.Agent, entries []MCP
 	return session
 }
 
-func TestMCPStructuredFailureShape(t *testing.T) {
+func TestMCPFailureShape(t *testing.T) {
 	// Every tool-execution error must be a completed tool result with
 	// IsError=true, never a transport-level failure and never raw JSON.
 	agent := chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
@@ -909,6 +908,192 @@ func TestMCPStructuredFailureShape(t *testing.T) {
 		_, ok := content.(*sdkmcp.TextContent)
 		assert.True(t, ok, "failure content must be typed text")
 	}
+}
+
+func TestCatalogProjection(t *testing.T) {
+	agent := newMCPTestAgent()
+	owned := map[string]chat.Info{
+		"agent/zeta": {
+			Description: "listed in models only",
+			Created:     100,
+			OwnedBy:     "team-z",
+		},
+		"agent/alpha": {
+			Description: "public echo",
+			Tool:        "public_echo",
+			Created:     50,
+			OwnedBy:     "team-a",
+			Extensions:  map[string]bool{"keep": true},
+		},
+	}
+	fixture := newMCPFixture(t, agent, WithCatalog(func(context.Context) (map[string]chat.Info, error) {
+		return owned, nil
+	}), WithMCP())
+
+	t.Run("models includes all targets in deterministic order", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodGet, fixture.http.URL+"/v1/models", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer token-a")
+		resp, err := fixture.http.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var body struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID      string `json:"id"`
+				Object  string `json:"object"`
+				Created int64  `json:"created"`
+				OwnedBy string `json:"owned_by"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Len(t, body.Data, 2)
+		assert.Equal(t, "agent/alpha", body.Data[0].ID)
+		assert.Equal(t, int64(50), body.Data[0].Created)
+		assert.Equal(t, "team-a", body.Data[0].OwnedBy)
+		assert.Equal(t, "agent/zeta", body.Data[1].ID)
+		assert.Equal(t, int64(100), body.Data[1].Created)
+		assert.Equal(t, "team-z", body.Data[1].OwnedBy)
+	})
+
+	t.Run("mcp exposes only nonempty Tool names differing from targets", func(t *testing.T) {
+		session := fixture.connect(t, "token-a")
+		listed, err := session.ListTools(context.Background(), nil)
+		require.NoError(t, err)
+		require.Len(t, listed.Tools, 1)
+		assert.Equal(t, "public_echo", listed.Tools[0].Name)
+		assert.Equal(t, "public echo", listed.Tools[0].Description)
+
+		call, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{
+			Name:      "public_echo",
+			Arguments: map[string]any{"message": "hi"},
+		})
+		require.NoError(t, err)
+		require.False(t, call.IsError)
+		select {
+		case req := <-agent.seen:
+			assert.Equal(t, "agent/alpha", req.Target)
+		default:
+			t.Fatal("agent was not invoked through the catalog target")
+		}
+	})
+
+	t.Run("application catalog map and nested values are not mutated", func(t *testing.T) {
+		require.Len(t, owned, 2)
+		assert.Equal(t, chat.Info{
+			Description: "listed in models only",
+			Created:     100,
+			OwnedBy:     "team-z",
+		}, owned["agent/zeta"])
+		assert.Equal(t, "public_echo", owned["agent/alpha"].Tool)
+		assert.Equal(t, map[string]bool{"keep": true}, owned["agent/alpha"].Extensions)
+	})
+}
+
+func TestCatalogCallerModels(t *testing.T) {
+	agent := newMCPTestAgent()
+	fixture := newMCPFixture(t, agent, WithCatalog(func(ctx context.Context) (map[string]chat.Info, error) {
+		switch mcpCaller(ctx) {
+		case "user-a":
+			return map[string]chat.Info{"agent/a": {OwnedBy: "a", Tool: "tool-a"}}, nil
+		case "user-b":
+			return map[string]chat.Info{"agent/b": {OwnedBy: "b"}}, nil
+		default:
+			return nil, nil
+		}
+	}), WithMCP())
+
+	for _, test := range []struct {
+		token   string
+		modelID string
+		tools   int
+	}{
+		{"token-a", "agent/a", 1},
+		{"token-b", "agent/b", 0},
+	} {
+		t.Run(test.token, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, fixture.http.URL+"/v1/models", nil)
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+test.token)
+			resp, err := fixture.http.Client().Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			var body struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			require.Len(t, body.Data, 1)
+			assert.Equal(t, test.modelID, body.Data[0].ID)
+
+			session := fixture.connect(t, test.token)
+			listed, err := session.ListTools(context.Background(), nil)
+			require.NoError(t, err)
+			assert.Len(t, listed.Tools, test.tools)
+		})
+	}
+}
+
+func TestCatalogOptionOrder(t *testing.T) {
+	agent := newMCPTestAgent()
+	catalog := Catalog(func(context.Context) (map[string]chat.Info, error) {
+		return map[string]chat.Info{"agent/echo": {Tool: "echo", Description: "echo"}}, nil
+	})
+	for _, name := range []string{"mcp then catalog", "catalog then mcp"} {
+		t.Run(name, func(t *testing.T) {
+			var options []Option
+			if name == "mcp then catalog" {
+				options = []Option{WithMCP(), WithCatalog(catalog)}
+			} else {
+				options = []Option{WithCatalog(catalog), WithMCP()}
+			}
+			handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+				return agent, chat.Info{}, nil
+			}), options...)
+			require.NotNil(t, handler.mcp)
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+			client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
+			session, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: server.URL + "/mcp"}, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = session.Close() })
+			listed, err := session.ListTools(context.Background(), nil)
+			require.NoError(t, err)
+			require.Len(t, listed.Tools, 1)
+			assert.Equal(t, "echo", listed.Tools[0].Name)
+		})
+	}
+}
+
+func TestCatalogToolFilter(t *testing.T) {
+	session := newPlainMCPSessionWithCatalog(t, newMCPTestAgent(), map[string]chat.Info{
+		"agent/hidden": {Description: "models only"},
+		"agent/shown":  {Description: "mcp too", Tool: "shown"},
+	})
+	listed, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, listed.Tools, 1)
+	assert.Equal(t, "shown", listed.Tools[0].Name)
+}
+
+func TestCatalogMCPEmpty(t *testing.T) {
+	agent := newMCPTestAgent()
+	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return agent, chat.Info{}, nil
+	}), WithMCP())
+	require.NotNil(t, handler.mcp)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "mcp-test", Version: "v0.0.1"}, nil)
+	session, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: server.URL + "/mcp"}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	listed, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, listed.Tools)
 }
 
 var _ = bearerTransport{}

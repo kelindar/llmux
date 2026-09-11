@@ -642,10 +642,12 @@ func TestModelsList(t *testing.T) {
 		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
 			return chat.Outcome{}, nil
 		}), chat.Info{}, nil
-	}), WithModels(
-		chat.Model{ID: "agent/basic", OwnedBy: "test"},
-		chat.Model{ID: "agent/other"},
-	))
+	}), WithCatalog(func(context.Context) (map[string]chat.Info, error) {
+		return map[string]chat.Info{
+			"agent/other": {},
+			"agent/basic": {Created: 42, OwnedBy: "test"},
+		}, nil
+	}))
 	req := httptest.NewRequest(http.MethodGet, "/models", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
@@ -660,8 +662,24 @@ func TestModelsList(t *testing.T) {
 		assert.Equal(t, "model", obj["object"], "entry %d", i)
 	}
 	assert.Equal(t, "agent/basic", data[0].(map[string]any)["id"])
+	assert.Equal(t, float64(42), data[0].(map[string]any)["created"])
 	assert.Equal(t, "test", data[0].(map[string]any)["owned_by"])
 	assert.Equal(t, "agent/other", data[1].(map[string]any)["id"])
+}
+
+func TestModelsEmpty(t *testing.T) {
+	handler := New(chat.Resolver(func(context.Context, string) (chat.Agent, chat.Info, error) {
+		return chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}), chat.Info{}, nil
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	body := decodeResponse(t, recorder)
+	assert.Equal(t, "list", body["object"])
+	assert.Empty(t, body["data"])
 }
 
 func TestMethodNotAllowed(t *testing.T) {
