@@ -1,5 +1,5 @@
 <p align="center">
-    <img width="300" height="100" src=".github/logo.png" border="0" alt="kelindar/roaring">
+    <img width="300" height="100" src=".github/logo.png" border="0" alt="kelindar/llmux">
     <br>
     <img src="https://img.shields.io/github/go-mod/go-version/kelindar/llmux" alt="Go Version">
     <a href="https://pkg.go.dev/github.com/kelindar/llmux"><img src="https://pkg.go.dev/badge/github.com/kelindar/llmux" alt="PkgGoDev"></a>
