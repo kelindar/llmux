@@ -16,6 +16,23 @@ func optionalString(object map[string]jsontext.Value, key string) (string, error
 	return value, err
 }
 
+func parseItemStatus(object map[string]jsontext.Value) (chat.Status, error) {
+	value, ok, err := decodeString(object, "status")
+	switch {
+	case err != nil:
+		return "", err
+	case !ok || value == "":
+		return "", nil
+	}
+	status := chat.Status(value)
+	switch status {
+	case chat.StatusInProgress, chat.StatusCompleted, chat.StatusIncomplete, chat.StatusFailed, chat.StatusCancelled:
+		return status, nil
+	default:
+		return "", chat.Invalid("input.status", "unsupported item status "+value)
+	}
+}
+
 func parseToolChoice(raw jsontext.Value) (*chat.ToolChoice, error) {
 	var value string
 	if err := json.Unmarshal(raw, &value); err == nil {
@@ -260,7 +277,7 @@ func parseResponsesItem(raw jsontext.Value) ([]chat.Item, error) {
 	}
 	switch typeName {
 	case "message":
-		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "role": true, "content": true, "id": true}); err != nil {
+		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "role": true, "content": true, "id": true, "status": true}); err != nil {
 			return nil, err
 		}
 		roleValue, err := requireString(object, "role")
@@ -284,9 +301,13 @@ func parseResponsesItem(raw jsontext.Value) ([]chat.Item, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.Status, err = parseItemStatus(object)
+		if err != nil {
+			return nil, err
+		}
 		return []chat.Item{item}, nil
 	case "function_call":
-		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "call_id": true, "name": true, "arguments": true}); err != nil {
+		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "call_id": true, "name": true, "arguments": true, "status": true}); err != nil {
 			return nil, err
 		}
 		callID, err := requireString(object, "call_id")
@@ -309,9 +330,14 @@ func parseResponsesItem(raw jsontext.Value) ([]chat.Item, error) {
 		if err != nil {
 			return nil, err
 		}
+		if status, err := parseItemStatus(object); err != nil {
+			return nil, err
+		} else if status != "" {
+			item.Status = status
+		}
 		return []chat.Item{item}, nil
 	case "function_call_output":
-		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "call_id": true, "output": true}); err != nil {
+		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "call_id": true, "output": true, "status": true}); err != nil {
 			return nil, err
 		}
 		callID, err := requireString(object, "call_id")
@@ -331,9 +357,13 @@ func parseResponsesItem(raw jsontext.Value) ([]chat.Item, error) {
 		if err != nil {
 			return nil, err
 		}
+		item.Status, err = parseItemStatus(object)
+		if err != nil {
+			return nil, err
+		}
 		return []chat.Item{item}, nil
 	case "reasoning":
-		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "summary": true, "encrypted_content": true}); err != nil {
+		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "summary": true, "encrypted_content": true, "status": true}); err != nil {
 			return nil, err
 		}
 		itemID, err := optionalString(object, "id")
@@ -341,6 +371,11 @@ func parseResponsesItem(raw jsontext.Value) ([]chat.Item, error) {
 			return nil, err
 		}
 		item := chat.Item{Type: chat.ItemReasoning, ID: itemID, Status: chat.StatusCompleted}
+		if status, err := parseItemStatus(object); err != nil {
+			return nil, err
+		} else if status != "" {
+			item.Status = status
+		}
 		if rawSummary, ok := object["summary"]; ok {
 			values, err := rawArray(rawSummary, "input.summary")
 			if err != nil {

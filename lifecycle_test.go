@@ -38,6 +38,22 @@ func (s storeHook) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Acc
 	return s.base.Accept(ctx, turn)
 }
 
+type loadHook struct {
+	base  Store
+	loads *atomic.Int32
+}
+
+func (s loadHook) Load(ctx context.Context, id string) ([]chat.Item, error) {
+	if s.loads != nil {
+		s.loads.Add(1)
+	}
+	return s.base.Load(ctx, id)
+}
+
+func (s loadHook) Accept(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
+	return s.base.Accept(ctx, turn)
+}
+
 type replayEntry struct {
 	response chat.Response
 }
@@ -343,7 +359,7 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusOK, second.Code)
 		require.Equal(t, []int{1, 3}, turns)
 		assert.Equal(t, 1, acceptTurn)
-		assert.Equal(t, 3, acceptInput)
+		assert.Equal(t, 1, acceptInput, "Accept sees turn-only input; history merges after Accept for catalog agents")
 		life.mu.Lock()
 		rec := life.records[id]
 		life.mu.Unlock()
@@ -353,6 +369,65 @@ func TestLifecycle(t *testing.T) {
 		assert.Len(t, rec.Response.Output, 1)
 		require.NotNil(t, rec.Response.Previous)
 		assert.Equal(t, id, *rec.Response.Previous)
+	})
+
+	t.Run("acceptance agent owns input without history reload", func(t *testing.T) {
+		life := newMemoryLife()
+		var loads atomic.Int32
+		var catalogRuns atomic.Int32
+		var acceptAgentRuns atomic.Int32
+		var acceptInput int
+		store := storeHook{
+			base: loadHook{base: life, loads: &loads},
+			accept: func(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
+				acceptInput = len(turn.Request.Input)
+				acc, err := life.Accept(ctx, turn)
+				if err != nil {
+					return acc, err
+				}
+				acc.Agent = chat.AgentFunc(func(_ context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+					acceptAgentRuns.Add(1)
+					assert.Equal(t, 1, len(req.Input), "request-specific agent keeps turn-only input")
+					return chat.Outcome{}, emit(chat.Text("prepared"))
+				})
+				return acc, nil
+			},
+		}
+		handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			catalogRuns.Add(1)
+			return chat.Outcome{}, emit(chat.Text("catalog"))
+		}), chat.Info{Continuation: true}, WithStore(store))
+
+		first := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"a"}`, nil)
+		require.Equal(t, http.StatusOK, first.Code)
+		id := decodeResponse(t, first)["id"].(string)
+
+		second := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"previous_response_id":"`+id+`","input":"b"}`, nil)
+		require.Equal(t, http.StatusOK, second.Code)
+		assert.Equal(t, 1, acceptInput)
+		assert.Equal(t, int32(0), loads.Load(), "Acceptance.Agent must skip Store.Load")
+		assert.Equal(t, int32(0), catalogRuns.Load(), "Acceptance.Agent replaces the catalog agent")
+		assert.Equal(t, int32(2), acceptAgentRuns.Load())
+		body := decodeResponse(t, second)
+		require.Len(t, body["output"].([]any), 1)
+	})
+
+	t.Run("accept receives catalog agent from load", func(t *testing.T) {
+		life := newMemoryLife()
+		catalogAgent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, emit(chat.Text("from-catalog"))
+		})
+		var sawCatalogAgent bool
+		handler := testHandler(catalogAgent, chat.Info{Continuation: true}, WithStore(storeHook{
+			base: life,
+			accept: func(ctx context.Context, turn *chat.TurnRequest) (chat.Acceptance, error) {
+				sawCatalogAgent = turn.CatalogAgent != nil
+				return life.Accept(ctx, turn)
+			},
+		}))
+		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"hi"}`, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.True(t, sawCatalogAgent)
 	})
 
 	t.Run("accept keeps execution options for fingerprinting", func(t *testing.T) {

@@ -98,101 +98,156 @@ func anthropicErrorType(err *chat.Error) string {
 }
 
 func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed parsedRequest) {
-	agent, capabilities, err := h.resolve(r.Context(), parsed.Request.Target)
+	prep, err := h.prepareTurn(r.Context(), r.Header.Get("Idempotency-Key"), &parsed)
 	if err != nil {
 		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
 		return
 	}
-	if err := h.validateParsed(&parsed, capabilities); err != nil {
-		writeProtocolError(w, parsed.Kind, err)
-		return
-	}
-	if err := h.prepareParsed(r.Context(), &parsed); err != nil {
-		h.logError(r.Context(), err)
-		writeProtocolError(w, parsed.Kind, err)
-		return
-	}
-	if err := h.validateParsed(&parsed, capabilities); err != nil {
-		writeProtocolError(w, parsed.Kind, err)
+	adapter := adapterFor(parsed.Kind)
+	if prep.replay != nil {
+		h.writeReplay(w, parsed, adapter, prep.meta, prep.replay.Clone())
 		return
 	}
 
-	acceptance, accepted, err := h.acceptTurn(r, &parsed)
+	validateEvent := h.outputValidator(&parsed, prep.info, prep.acceptance.Activity, adapter)
+	if parsed.Stream {
+		if prep.acceptance.RunTimeout < 0 {
+			invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
+			h.failAccepted(r.Context(), prep.acceptance, prep.meta.Response, invalid)
+			writeProtocolError(w, parsed.Kind, invalid)
+			return
+		}
+		runCtx := r.Context()
+		if prep.acceptance.RunTimeout > 0 {
+			var cancel context.CancelFunc
+			runCtx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), prep.acceptance.RunTimeout)
+			defer cancel()
+		}
+		h.serveStream(w, r, parsed, prep.agent, adapter, prep.meta, prep.acceptance, runCtx, validateEvent)
+		return
+	}
+
+	resp, err := h.executeOrdinary(r.Context(), parsed, prep.agent, &prep.meta, prep.acceptance, validateEvent)
 	if err != nil {
+		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
 		return
+	}
+	body, err := adapter.Response(parsed.Request, execution.Result{Items: resp.Output, Outcome: outcomeFromResponse(resp)}, prep.meta)
+	if err != nil {
+		h.logError(r.Context(), err)
+		writeProtocolError(w, parsed.Kind, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// turnPrep is the shared post-accept lifecycle state for stream and ordinary paths.
+type turnPrep struct {
+	agent      chat.Agent
+	info       chat.Info
+	acceptance chat.Acceptance
+	meta       responseMeta
+	replay     *chat.Response
+}
+
+// prepareTurn runs resolve → validate → prepare → accept → prepare execution.
+// Replays return without execution preparation. Accepted work that fails
+// preparation is finalized exactly once via Finish.
+func (h *Handler) prepareTurn(ctx context.Context, idempotencyKey string, parsed *parsedRequest) (turnPrep, error) {
+	agent, info, err := h.resolve(ctx, parsed.Request.Target)
+	if err != nil {
+		return turnPrep{}, err
+	}
+	if err := h.validateParsed(parsed, info); err != nil {
+		return turnPrep{}, err
+	}
+	if err := h.prepareParsed(ctx, parsed); err != nil {
+		return turnPrep{}, err
+	}
+
+	acceptance, _, err := h.acceptContext(ctx, idempotencyKey, parsed, agent)
+	if err != nil {
+		return turnPrep{}, err
 	}
 
 	meta := responseMeta{
-		Response: internalprotocol.InitialResponse(acceptance.Response, &parsed),
+		Response: internalprotocol.InitialResponse(acceptance.Response, parsed),
 		Activity: acceptance.Activity,
 	}
 	acceptance.Response = meta.Response
 
-	adapter := adapterFor(parsed.Kind)
-	validateEvent := func(event chat.Event) error {
+	if acceptance.Replay != nil {
+		return turnPrep{info: info, acceptance: acceptance, meta: meta, replay: acceptance.Replay}, nil
+	}
+
+	agent = executionAgent(agent, acceptance)
+	if err := h.prepareExecution(ctx, parsed, acceptance); err != nil {
+		h.failAccepted(ctx, acceptance, meta.Response, err)
+		return turnPrep{}, err
+	}
+	if err := h.validateParsed(parsed, info); err != nil {
+		h.failAccepted(ctx, acceptance, meta.Response, err)
+		return turnPrep{}, err
+	}
+	return turnPrep{agent: agent, info: info, acceptance: acceptance, meta: meta}, nil
+}
+
+// runTurn executes one non-streaming request through the shared lifecycle and
+// returns a finalized response. Replays skip preparation and execution.
+func (h *Handler) runTurn(ctx context.Context, idempotencyKey string, parsed *parsedRequest) (chat.Response, error) {
+	prep, err := h.prepareTurn(ctx, idempotencyKey, parsed)
+	if err != nil {
+		return chat.Response{}, err
+	}
+	if prep.replay != nil {
+		return prep.replay.Clone(), nil
+	}
+	return h.executeOrdinary(ctx, *parsed, prep.agent, &prep.meta, prep.acceptance, h.outputValidator(parsed, prep.info, prep.acceptance.Activity, nil))
+}
+
+func (h *Handler) failAccepted(ctx context.Context, acceptance chat.Acceptance, base chat.Response, err error) {
+	if acceptance.Finish == nil {
+		return
+	}
+	failed := base
+	failed.Status = chat.StatusFailed
+	failed.Error = publicAPIError(err)
+	failed.CompletedAt = unixNow()
+	_ = acceptance.Finish(ctx, &failed, err)
+}
+
+func (h *Handler) outputValidator(parsed *parsedRequest, info chat.Info, activity bool, adapter protocolAdapter) func(chat.Event) error {
+	return func(event chat.Event) error {
 		switch {
 		case parsed.Kind == protocolResponses && requiresImageGeneration(event) && !parsed.Request.Controls.ImageGeneration:
 			return chat.Unsupported("output", "image output requires the Responses image_generation tool")
 		case internalprotocol.RequiresReasoningSummary(event) && (parsed.Request.Controls.Reasoning == nil || !parsed.Request.Controls.Reasoning.Summary):
 			return chat.Unsupported("reasoning.summary", "reasoning summary output was not requested")
-		case event.Type == chat.EventActivity && !acceptance.Activity:
+		case event.Type == chat.EventActivity && !activity:
 			return chat.Unsupported("output", "activity events were not enabled for this request")
 		}
-		if err := adapter.ValidateEvent(event); err != nil {
-			return err
+		if adapter != nil {
+			if err := adapter.ValidateEvent(event); err != nil {
+				return err
+			}
 		}
 		if event.Type == chat.EventActivity {
 			return nil
 		}
-		if err := internalprotocol.ValidateOutputEvent(event, capabilities); err != nil {
+		if err := internalprotocol.ValidateOutputEvent(event, info); err != nil {
 			return err
 		}
 		return internalprotocol.ValidateRequestedOutput(event, parsed.Request.Output.Modalities)
 	}
-
-	if acceptance.Replay != nil {
-		h.writeReplay(w, parsed, adapter, meta, acceptance.Replay.Clone())
-		return
-	}
-	if !accepted {
-		// No lifecycle configured: fall through with library defaults.
-	}
-
-	if parsed.Stream {
-		if acceptance.RunTimeout < 0 {
-			invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
-			if acceptance.Finish != nil {
-				failed := meta.Response
-				failed.Status = chat.StatusFailed
-				failed.Error = publicAPIError(invalid)
-				failed.CompletedAt = unixNow()
-				_ = acceptance.Finish(r.Context(), &failed, invalid)
-			}
-			writeProtocolError(w, parsed.Kind, invalid)
-			return
-		}
-		runCtx := r.Context()
-		if acceptance.RunTimeout > 0 {
-			var cancel context.CancelFunc
-			runCtx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), acceptance.RunTimeout)
-			defer cancel()
-		}
-		h.serveStream(w, r, parsed, agent, adapter, meta, acceptance, runCtx, validateEvent)
-		return
-	}
-	h.serveOrdinary(w, r, parsed, agent, adapter, meta, acceptance, validateEvent)
-}
-
-func (h *Handler) acceptTurn(r *http.Request, parsed *parsedRequest) (chat.Acceptance, bool, error) {
-	return h.acceptContext(r.Context(), r.Header.Get("Idempotency-Key"), parsed)
 }
 
 // acceptContext applies Store.Accept for one canonical request. Idempotency keys
 // come from the calling protocol: the Idempotency-Key header for chat
-// endpoints and none for MCP tool calls.
-func (h *Handler) acceptContext(ctx context.Context, idempotencyKey string, parsed *parsedRequest) (chat.Acceptance, bool, error) {
+// endpoints and none for MCP tool calls. CatalogAgent is the Agent returned by
+// Catalog.Load for the request target.
+func (h *Handler) acceptContext(ctx context.Context, idempotencyKey string, parsed *parsedRequest, catalogAgent chat.Agent) (chat.Acceptance, bool, error) {
 	if h.store == nil {
 		return chat.Acceptance{}, false, nil
 	}
@@ -205,6 +260,7 @@ func (h *Handler) acceptContext(ctx context.Context, idempotencyKey string, pars
 		Retain:         parsed.Retain,
 		Stream:         parsed.Stream,
 		IdempotencyKey: idempotencyKey,
+		CatalogAgent:   catalogAgent,
 	})
 	if err != nil {
 		return chat.Acceptance{}, true, err
@@ -318,31 +374,6 @@ func (h *Handler) serveStream(
 	}
 }
 
-func (h *Handler) serveOrdinary(
-	w http.ResponseWriter,
-	r *http.Request,
-	parsed parsedRequest,
-	agent chat.Agent,
-	adapter protocolAdapter,
-	meta responseMeta,
-	acceptance chat.Acceptance,
-	validateEvent func(chat.Event) error,
-) {
-	resp, err := h.executeOrdinary(r.Context(), parsed, agent, &meta, acceptance, validateEvent)
-	if err != nil {
-		h.logError(r.Context(), err)
-		writeProtocolError(w, parsed.Kind, err)
-		return
-	}
-	body, err := adapter.Response(parsed.Request, execution.Result{Items: resp.Output, Outcome: outcomeFromResponse(resp)}, meta)
-	if err != nil {
-		h.logError(r.Context(), err)
-		writeProtocolError(w, parsed.Kind, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, body)
-}
-
 // executeOrdinary runs a fully validated parsed request to completion without
 // streaming delivery. It owns bounded execution (Acceptance.RunTimeout),
 // lifecycle Finish exactly once for accepted executions, and error
@@ -359,13 +390,7 @@ func (h *Handler) executeOrdinary(
 ) (chat.Response, error) {
 	if acceptance.RunTimeout < 0 {
 		invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
-		if acceptance.Finish != nil {
-			failed := meta.Response
-			failed.Status = chat.StatusFailed
-			failed.Error = publicAPIError(invalid)
-			failed.CompletedAt = unixNow()
-			_ = acceptance.Finish(ctx, &failed, invalid)
-		}
+		h.failAccepted(ctx, acceptance, meta.Response, invalid)
 		return chat.Response{}, invalid
 	}
 
