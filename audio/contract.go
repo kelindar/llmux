@@ -1,3 +1,5 @@
+// Copyright (c) Roman Atachiants and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
 // Package audio contains the optional service contracts used by llmux's
 // transcription and speech endpoints.
 package audio

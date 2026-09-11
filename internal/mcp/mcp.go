@@ -1,3 +1,5 @@
+// Copyright (c) Roman Atachiants and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
 // Package mcp implements the optional MCP endpoint for llmux. It exposes
 // application-owned agents as MCP tools over stateless Streamable HTTP,
 // reusing the shared agent execution and lifecycle machinery through the

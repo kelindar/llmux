@@ -1,3 +1,5 @@
+// Copyright (c) Roman Atachiants and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
 // Command lifecycle shows the smallest Store: Accept assigns identity, the
 // agent runs, and Finish saves the turn-local result. Catalog alone handles
 // agents; Store is optional persistence.

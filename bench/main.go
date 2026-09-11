@@ -1,3 +1,5 @@
+// Copyright (c) Roman Atachiants and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
 // Command bench measures the contract, protocol adapters, and end-to-end
 // handler paths. Run it with `go run ./bench`.
 package main

@@ -1,3 +1,5 @@
+// Copyright (c) Roman Atachiants and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
 // Command mcp demonstrates llmux's optional MCP endpoint: one Catalog for
 // List (discovery) and Load (invocation), projected into GET /models and
 // (when enabled) the MCP tools at /mcp.
