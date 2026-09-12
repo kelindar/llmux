@@ -4,10 +4,9 @@
 package llmux
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/base64"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -16,6 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/buger/jsonparser"
 	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
 	internalwire "github.com/kelindar/llmux/internal/wire"
@@ -175,12 +175,7 @@ func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		writeProtocolError(w, protocolChat, err)
 		return
 	}
-	object, err := decodeObject(body)
-	if err != nil {
-		writeProtocolError(w, protocolChat, fmtError("body", "request body must be valid JSON", err))
-		return
-	}
-	request, err := parseSpeechRequest(object)
+	request, err := parseSpeechRequest(body)
 	if err != nil {
 		writeProtocolError(w, protocolChat, err)
 		return
@@ -227,26 +222,62 @@ func (h *Handler) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, error) {
-	allowed := map[string]bool{
-		"model": true, "input": true, "voice": true, "instructions": true,
-		"response_format": true, "speed": true, "stream_format": true,
+type speechDecoder struct {
+	model          internalwire.Value
+	input          internalwire.Value
+	voice          internalwire.Value
+	instructions   internalwire.Value
+	responseFormat internalwire.Value
+	speed          internalwire.Value
+	streamFormat   internalwire.Value
+}
+
+func (d *speechDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := internalwire.Value{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("model")):
+		d.model = value
+	case bytes.Equal(key, []byte("input")):
+		d.input = value
+	case bytes.Equal(key, []byte("voice")):
+		d.voice = value
+	case bytes.Equal(key, []byte("instructions")):
+		d.instructions = value
+	case bytes.Equal(key, []byte("response_format")):
+		d.responseFormat = value
+	case bytes.Equal(key, []byte("speed")):
+		d.speed = value
+	case bytes.Equal(key, []byte("stream_format")):
+		d.streamFormat = value
+	default:
+		return chat.Unsupported(string(key), "request field is not supported by llmux")
 	}
-	if err := internalwire.RejectUnknownStrict(object, allowed); err != nil {
-		return audio.SpeechRequest{}, err
+	return nil
+}
+
+func parseSpeechRequest(data []byte) (audio.SpeechRequest, error) {
+	if err := internalwire.ValidateObject(data); err != nil {
+		return audio.SpeechRequest{}, fmtError("body", "request body must be valid JSON", err)
 	}
-	model, err := internalwire.RequireString(object, "model")
+	var decoder speechDecoder
+	if err := jsonparser.ObjectEach(data, decoder.field); err != nil {
+		if _, ok := err.(*chat.Error); ok {
+			return audio.SpeechRequest{}, err
+		}
+		return audio.SpeechRequest{}, fmtError("body", "request body must be valid JSON", err)
+	}
+	model, err := speechRequiredString(decoder.model, "model")
 	if err != nil {
 		return audio.SpeechRequest{}, err
 	}
-	input, err := internalwire.RequireString(object, "input")
+	input, err := speechRequiredString(decoder.input, "input")
 	if err != nil {
 		return audio.SpeechRequest{}, err
 	}
 	if utf8.RuneCountInString(input) > 4096 {
 		return audio.SpeechRequest{}, chat.Invalid("input", "input exceeds the 4096 character limit")
 	}
-	voice, err := parseSpeechVoice(object["voice"])
+	voice, err := parseSpeechVoice(decoder.voice)
 	if err != nil {
 		return audio.SpeechRequest{}, err
 	}
@@ -254,13 +285,13 @@ func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, 
 		return audio.SpeechRequest{}, chat.Invalid("voice", "voice is required")
 	}
 	request := audio.SpeechRequest{Model: model, Input: input, Voice: voice, Speed: 1, ResponseFormat: "mp3", StreamFormat: "audio"}
-	switch value, ok, err := decodeString(object, "instructions"); {
+	switch value, ok, err := speechString(decoder.instructions, "instructions"); {
 	case err != nil:
 		return audio.SpeechRequest{}, err
 	case ok:
 		request.Instructions = value
 	}
-	switch value, ok, err := decodeString(object, "response_format"); {
+	switch value, ok, err := speechString(decoder.responseFormat, "response_format"); {
 	case err != nil:
 		return audio.SpeechRequest{}, err
 	case ok:
@@ -269,7 +300,7 @@ func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, 
 	if !validSpeechFormat(request.ResponseFormat) {
 		return audio.SpeechRequest{}, chat.Unsupported("response_format", "supported formats are mp3, opus, aac, flac, wav, and pcm")
 	}
-	switch value, err := decodeFloat(object, "speed"); {
+	switch value, err := speechFloat(decoder.speed, "speed"); {
 	case err != nil:
 		return audio.SpeechRequest{}, err
 	case value != nil:
@@ -278,7 +309,7 @@ func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, 
 		}
 		request.Speed = *value
 	}
-	switch value, ok, err := decodeString(object, "stream_format"); {
+	switch value, ok, err := speechString(decoder.streamFormat, "stream_format"); {
 	case err != nil:
 		return audio.SpeechRequest{}, err
 	case ok:
@@ -292,22 +323,71 @@ func parseSpeechRequest(object map[string]jsontext.Value) (audio.SpeechRequest, 
 	return request, nil
 }
 
-func parseSpeechVoice(raw jsontext.Value) (string, error) {
-	if len(raw) == 0 {
+func parseSpeechVoice(value internalwire.Value) (string, error) {
+	if !value.Present() {
 		return "", chat.Invalid("voice", "voice is required")
 	}
-	var voice string
-	if err := json.Unmarshal(raw, &voice); err == nil {
+	if value.Type == jsonparser.String || value.Type == jsonparser.Null {
+		voice, err := internalwire.String(value.Raw, value.Type)
+		if err != nil {
+			return "", chat.Invalid("voice", "voice must be a string or an object with an id")
+		}
 		return strings.TrimSpace(voice), nil
 	}
-	object, err := internalwire.RawObject(raw, "voice")
-	if err != nil {
+	if value.Type != jsonparser.Object {
 		return "", chat.Invalid("voice", "voice must be a string or an object with an id")
 	}
-	if err := internalwire.RejectUnknownStrict(object, map[string]bool{"id": true}); err != nil {
+	var decoder voiceDecoder
+	if err := jsonparser.ObjectEach(value.Raw, decoder.field); err != nil {
+		if _, ok := err.(*chat.Error); ok {
+			return "", err
+		}
+		return "", chat.Invalid("voice", "voice must be a string or an object with an id")
+	}
+	return speechRequiredString(decoder.id, "id")
+}
+
+type voiceDecoder struct{ id internalwire.Value }
+
+func (d *voiceDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	if bytes.Equal(key, []byte("id")) {
+		d.id = internalwire.Value{Raw: raw, Type: typ}
+		return nil
+	}
+	return chat.Unsupported(string(key), "request field is not supported by llmux")
+}
+
+func speechRequiredString(value internalwire.Value, key string) (string, error) {
+	decoded, ok, err := speechString(value, key)
+	if err != nil {
 		return "", err
 	}
-	return internalwire.RequireString(object, "id")
+	if !ok || strings.TrimSpace(decoded) == "" {
+		return "", chat.Invalid(key, key+" is required")
+	}
+	return decoded, nil
+}
+
+func speechString(value internalwire.Value, key string) (string, bool, error) {
+	if !value.Present() {
+		return "", false, nil
+	}
+	decoded, err := internalwire.String(value.Raw, value.Type)
+	if err != nil {
+		return "", true, chat.Invalid(key, "must be a string")
+	}
+	return decoded, true, nil
+}
+
+func speechFloat(value internalwire.Value, key string) (*float64, error) {
+	if !value.Present() {
+		return nil, nil
+	}
+	decoded, err := internalwire.Float(value.Raw, value.Type)
+	if err != nil {
+		return nil, chat.Invalid(key, "must be a number")
+	}
+	return &decoded, nil
 }
 
 func validSpeechFormat(format string) bool {

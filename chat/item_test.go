@@ -187,6 +187,18 @@ func TestItemValidate(t *testing.T) {
 			item:    Item{Role: RoleUser},
 			wantErr: "type is required",
 		},
+		"messageMissingRole": {
+			item:    Item{Type: ItemMessage},
+			wantErr: "message role is required",
+		},
+		"messageInvalidRole": {
+			item:    MessageItem(Role("other")),
+			wantErr: "invalid message role",
+		},
+		"messageBadPart": {
+			item:    MessageItem(RoleUser, Part{Type: PartText, Media: &Media{MIMEType: "image/png", Data: []byte{1}}}),
+			wantErr: "cannot contain media",
+		},
 		"invalidStatus": {
 			item:    Item{Type: ItemMessage, Role: RoleUser, Status: "bogus"},
 			wantErr: "invalid item status",
@@ -211,6 +223,10 @@ func TestItemValidate(t *testing.T) {
 			item:    Item{Type: ItemFunctionCall, CallID: "c1", Arguments: `{}`},
 			wantErr: "call_id and name",
 		},
+		"functionCallExtraFields": {
+			item:    Item{Type: ItemFunctionCall, Role: RoleAssistant},
+			wantErr: "fields from another item type",
+		},
 		"functionCallOutputOk": {
 			item: FunctionCallOutputItem("c1", TextPart("result")),
 		},
@@ -218,12 +234,28 @@ func TestItemValidate(t *testing.T) {
 			item:    Item{Type: ItemFunctionCallOutput, Output: []Part{TextPart("x")}},
 			wantErr: "call_id",
 		},
+		"functionCallOutputExtraFields": {
+			item:    Item{Type: ItemFunctionCallOutput, CallID: "c1", Role: RoleUser},
+			wantErr: "fields from another item type",
+		},
+		"functionCallOutputBadPart": {
+			item:    FunctionCallOutputItem("c1", Part{Type: "other"}),
+			wantErr: "unknown content part type",
+		},
 		"reasoningOk": {
 			item: Item{Type: ItemReasoning, Summary: []Part{SummaryPart("think")}},
+		},
+		"reasoningExtraFields": {
+			item:    Item{Type: ItemReasoning, Role: RoleAssistant},
+			wantErr: "fields from another item type",
 		},
 		"reasoningBadPart": {
 			item:    Item{Type: ItemReasoning, Summary: []Part{TextPart("nope")}},
 			wantErr: "reasoning_summary",
+		},
+		"reasoningInvalidPart": {
+			item:    Item{Type: ItemReasoning, Summary: []Part{{Type: PartReasoningSummary, Media: &Media{}}}},
+			wantErr: "cannot contain media",
 		},
 		"mediaImageOk": {
 			item: Item{
@@ -238,8 +270,24 @@ func TestItemValidate(t *testing.T) {
 			item:    Item{Type: ItemMedia, Content: []Part{}},
 			wantErr: "exactly one content part",
 		},
+		"mediaExtraFields": {
+			item:    Item{Type: ItemMedia, Content: []Part{ImagePart(InlineMedia("image/png", []byte{1}))}, Data: jsontext.Value(`{}`)},
+			wantErr: "fields from another item type",
+		},
+		"mediaMissingMedia": {
+			item:    Item{Type: ItemMedia, Content: []Part{{Type: PartImage}}},
+			wantErr: "missing media",
+		},
+		"mediaWrongPart": {
+			item:    Item{Type: ItemMedia, Content: []Part{TextPart("nope")}},
+			wantErr: "must contain image or audio",
+		},
 		"extensionOk": {
 			item: Item{Type: ItemExtension, Data: jsontext.Value(`{"k":"v"}`)},
+		},
+		"extensionExtraFields": {
+			item:    Item{Type: ItemExtension, Data: jsontext.Value(`{}`), Role: RoleUser},
+			wantErr: "fields from another item type",
 		},
 		"extensionInvalidJSON": {
 			item:    Item{Type: ItemExtension, Data: jsontext.Value(`{`)},

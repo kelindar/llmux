@@ -4,109 +4,172 @@
 package anthropic
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/base64"
 	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"strings"
 
+	"github.com/buger/jsonparser"
 	"github.com/kelindar/llmux/chat"
+	"github.com/kelindar/llmux/internal/wire"
 )
 
-// ParseRequest decodes an Anthropic Messages request into a canonical request.
-func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
-	allowed := map[string]bool{
-		"model": true, "max_tokens": true, "messages": true, "stream": true,
-		"system": true, "temperature": true, "top_p": true, "stop_sequences": true,
-		"tools": true, "tool_choice": true, "metadata": true, "thinking": true,
-		"service_tier": true, "container": true, "output_config": true,
-		"mcp_servers": true,
+type field = wire.Value
+
+type requestDecoder struct {
+	model         field
+	maxTokens     field
+	messages      field
+	stream        field
+	system        field
+	temperature   field
+	topP          field
+	stopSequences field
+	tools         field
+	toolChoice    field
+	metadata      field
+	thinking      field
+	serviceTier   field
+	container     field
+	outputConfig  field
+	mcpServers    field
+	extensions    map[string]jsontext.Value
+}
+
+// ParseRequest decodes an Anthropic Messages request directly from its body.
+// Returned strings, slices, maps, and raw JSON own their data independently
+// of body after this function returns.
+func ParseRequest(data []byte) (parsedRequest, error) {
+	if err := wire.ValidateObject(data); err != nil {
+		return parsedRequest{}, fmtError("body", "request body must be valid JSON", err)
 	}
-	if err := rejectUnknown(object, allowed); err != nil {
-		return parsedRequest{}, err
+
+	var decoder requestDecoder
+	if err := jsonparser.ObjectEach(data, decoder.field); err != nil {
+		if _, ok := err.(*chat.Error); ok {
+			return parsedRequest{}, err
+		}
+		return parsedRequest{}, fmtError("body", "request body must be valid JSON", err)
 	}
-	target, err := requireString(object, "model")
+	return decoder.parse()
+}
+
+func (d *requestDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("model")):
+		d.model = value
+	case bytes.Equal(key, []byte("max_tokens")):
+		d.maxTokens = value
+	case bytes.Equal(key, []byte("messages")):
+		d.messages = value
+	case bytes.Equal(key, []byte("stream")):
+		d.stream = value
+	case bytes.Equal(key, []byte("system")):
+		d.system = value
+	case bytes.Equal(key, []byte("temperature")):
+		d.temperature = value
+	case bytes.Equal(key, []byte("top_p")):
+		d.topP = value
+	case bytes.Equal(key, []byte("stop_sequences")):
+		d.stopSequences = value
+	case bytes.Equal(key, []byte("tools")):
+		d.tools = value
+	case bytes.Equal(key, []byte("tool_choice")):
+		d.toolChoice = value
+	case bytes.Equal(key, []byte("metadata")):
+		d.metadata = value
+	case bytes.Equal(key, []byte("thinking")):
+		d.thinking = value
+	case bytes.Equal(key, []byte("service_tier")):
+		d.serviceTier = value
+	case bytes.Equal(key, []byte("container")):
+		d.container = value
+	case bytes.Equal(key, []byte("output_config")):
+		d.outputConfig = value
+	case bytes.Equal(key, []byte("mcp_servers")):
+		d.mcpServers = value
+	case bytes.HasPrefix(key, []byte("x-")) || bytes.IndexByte(key, ':') >= 0:
+		if d.extensions == nil {
+			d.extensions = make(map[string]jsontext.Value)
+		}
+		d.extensions[string(key)] = wire.Copy(raw)
+	default:
+		return chat.Unsupported(string(key), "request field is not supported by llmux")
+	}
+	return nil
+}
+
+func (d requestDecoder) parse() (parsedRequest, error) {
+	target, err := requiredString(d.model, "model")
 	if err != nil {
 		return parsedRequest{}, err
 	}
-	maxTokens, err := decodeInt(object, "max_tokens")
+	maxTokens, err := decodeInt(d.maxTokens, "max_tokens")
 	if err != nil {
 		return parsedRequest{}, err
 	}
 	if maxTokens == nil || *maxTokens < 1 {
 		return parsedRequest{}, chat.Invalid("max_tokens", "max_tokens must be positive")
 	}
-	rawMessages, ok := object["messages"]
-	if !ok {
+	if !d.messages.Present() {
 		return parsedRequest{}, chat.Invalid("messages", "messages is required")
 	}
-	messageValues, err := rawArray(rawMessages, "messages")
+	input, err := parseMessages(d.messages)
 	if err != nil {
 		return parsedRequest{}, err
 	}
-	if len(messageValues) == 0 {
-		return parsedRequest{}, chat.Invalid("messages", "messages must not be empty")
-	}
-	input := make([]chat.Item, 0, len(messageValues))
-	for _, value := range messageValues {
-		items, err := parseAnthropicMessage(value)
-		if err != nil {
-			return parsedRequest{}, err
-		}
-		input = append(input, items...)
-	}
-	controls := chat.Controls{MaxOutputTokens: maxTokens, Extensions: namespacedExtensions(object, allowed)}
-	switch value, err := decodeFloat(object, "temperature"); {
-	case err != nil:
+
+	controls := chat.Controls{MaxOutputTokens: maxTokens, Extensions: d.extensions}
+	controls.Temperature, err = decodeFloat(d.temperature, "temperature")
+	if err != nil {
 		return parsedRequest{}, err
-	case value != nil:
-		if *value < 0 || *value > 1 {
-			return parsedRequest{}, chat.Invalid("temperature", "temperature must be between 0 and 1")
-		}
-		controls.Temperature = value
 	}
-	switch value, err := decodeFloat(object, "top_p"); {
-	case err != nil:
+	if controls.Temperature != nil && (*controls.Temperature < 0 || *controls.Temperature > 1) {
+		return parsedRequest{}, chat.Invalid("temperature", "temperature must be between 0 and 1")
+	}
+	controls.TopP, err = decodeFloat(d.topP, "top_p")
+	if err != nil {
 		return parsedRequest{}, err
-	case value != nil:
-		if *value < 0 || *value > 1 {
-			return parsedRequest{}, chat.Invalid("top_p", "top_p must be between 0 and 1")
-		}
-		controls.TopP = value
 	}
-	if _, ok := object["stop_sequences"]; ok {
-		controls.Stop, err = decodeStringSlice(object, "stop_sequences")
+	if controls.TopP != nil && (*controls.TopP < 0 || *controls.TopP > 1) {
+		return parsedRequest{}, chat.Invalid("top_p", "top_p must be between 0 and 1")
+	}
+	if d.stopSequences.Present() {
+		controls.Stop, err = decodeStrings(d.stopSequences, "stop_sequences")
 		if err != nil {
 			return parsedRequest{}, err
 		}
 	}
-	if raw, ok := object["tools"]; ok {
-		controls.Tools, err = parseAnthropicTools(raw)
+	if d.tools.Present() {
+		controls.Tools, err = parseAnthropicTools(d.tools)
 		if err != nil {
 			return parsedRequest{}, err
 		}
 	}
-	if raw, ok := object["tool_choice"]; ok {
-		controls.ToolChoice, err = parseAnthropicToolChoice(raw)
+	if d.toolChoice.Present() {
+		controls.ToolChoice, err = parseAnthropicToolChoice(d.toolChoice)
 		if err != nil {
 			return parsedRequest{}, err
 		}
 	}
-	var metadata map[string]string
-	if raw, ok := object["metadata"]; ok {
-		if err := json.Unmarshal(raw, &metadata); err != nil {
-			return parsedRequest{}, fmtError("metadata", "metadata must be an object of strings", err)
-		}
+	metadata, err := parseMetadata(d.metadata)
+	if err != nil {
+		return parsedRequest{}, err
 	}
-	if raw, ok := object["thinking"]; ok {
-		thinking, err := rawObject(raw, "thinking")
-		if err != nil {
+	if d.thinking.Present() {
+		if d.thinking.Type != jsonparser.Object {
+			return parsedRequest{}, chat.Invalid("thinking", "must be a JSON object")
+		}
+		var thinking thinkingDecoder
+		if err := objectEach(d.thinking.Raw, "thinking", thinking.field); err != nil {
 			return parsedRequest{}, err
 		}
-		if err := rejectUnknownStrict(thinking, map[string]bool{"type": true}); err != nil {
-			return parsedRequest{}, err
+		if thinking.unknown != "" {
+			return parsedRequest{}, chat.Unsupported(thinking.unknown, "request field is not supported by llmux")
 		}
-		typeName, err := requireString(thinking, "type")
+		typeName, err := requiredString(thinking.typeName, "type")
 		if err != nil {
 			return parsedRequest{}, err
 		}
@@ -114,42 +177,105 @@ func ParseRequest(object map[string]jsontext.Value) (parsedRequest, error) {
 			return parsedRequest{}, chat.Unsupported("thinking", "internal thinking is not exposed by the canonical agent contract")
 		}
 	}
-	for _, key := range []string{"service_tier", "container", "output_config", "mcp_servers"} {
-		if _, ok := object[key]; ok {
-			return parsedRequest{}, chat.Unsupported(key, key+" is not supported")
+	for _, unsupported := range []struct {
+		value field
+		name  string
+	}{
+		{d.serviceTier, "service_tier"},
+		{d.container, "container"},
+		{d.outputConfig, "output_config"},
+		{d.mcpServers, "mcp_servers"},
+	} {
+		if unsupported.value.Present() {
+			return parsedRequest{}, chat.Unsupported(unsupported.name, unsupported.name+" is not supported")
 		}
 	}
-	instructions := ""
-	if raw, ok := object["system"]; ok {
-		instructions, err = parseAnthropicSystem(raw)
-		if err != nil {
-			return parsedRequest{}, err
-		}
-	}
-	stream := false
-	switch value, err := decodeBool(object, "stream"); {
-	case err != nil:
+
+	instructions, err := parseAnthropicSystem(d.system)
+	if err != nil {
 		return parsedRequest{}, err
-	case value != nil:
-		stream = *value
+	}
+	stream, err := decodeBool(d.stream, "stream")
+	if err != nil {
+		return parsedRequest{}, err
 	}
 	return parsedRequest{
-		Kind:     protocolAnthropic,
-		Request:  chat.Request{Target: target, Instructions: instructions, Input: input, Controls: controls, Output: chat.OutputSpec{Modalities: chat.ModalityText}},
+		Kind: protocolAnthropic,
+		Request: chat.Request{
+			Target: target, Instructions: instructions, Input: input, Controls: controls,
+			Output: chat.OutputSpec{Modalities: chat.ModalityText},
+		},
 		Metadata: metadata,
-		Stream:   stream,
+		Stream:   stream != nil && *stream,
 	}, nil
 }
 
-func parseAnthropicMessage(raw jsontext.Value) ([]chat.Item, error) {
-	object, err := rawObject(raw, "messages")
+func parseMessages(value field) ([]chat.Item, error) {
+	if value.Type != jsonparser.Array {
+		return nil, chat.Invalid("messages", "must be a JSON array")
+	}
+	items := make([]chat.Item, 0, 4)
+	var parseErr error
+	_, err := jsonparser.ArrayEach(value.Raw, func(raw []byte, typ jsonparser.ValueType, _ int, callbackErr error) {
+		if parseErr != nil {
+			return
+		}
+		if callbackErr != nil {
+			parseErr = callbackErr
+			return
+		}
+		parsed, err := parseAnthropicMessage(raw, typ)
+		if err != nil {
+			parseErr = err
+			return
+		}
+		items = append(items, parsed...)
+	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
 	if err != nil {
+		return nil, chat.Invalid("messages", "must be a JSON array")
+	}
+	if len(items) == 0 {
+		return nil, chat.Invalid("messages", "messages must not be empty")
+	}
+	return items, nil
+}
+
+type messageDecoder struct {
+	role    field
+	content field
+	unknown string
+}
+
+func (d *messageDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("role")):
+		d.role = value
+	case bytes.Equal(key, []byte("content")):
+		d.content = value
+	default:
+		if d.unknown == "" {
+			d.unknown = string(key)
+		}
+	}
+	return nil
+}
+
+func parseAnthropicMessage(raw []byte, typ jsonparser.ValueType) ([]chat.Item, error) {
+	if typ != jsonparser.Object {
+		return nil, chat.Invalid("messages", "must be a JSON object")
+	}
+	var decoder messageDecoder
+	if err := objectEach(raw, "messages", decoder.field); err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownStrict(object, map[string]bool{"role": true, "content": true}); err != nil {
-		return nil, err
+	if decoder.unknown != "" {
+		return nil, chat.Unsupported(decoder.unknown, "request field is not supported by llmux")
 	}
-	roleValue, err := requireString(object, "role")
+	roleValue, err := requiredString(decoder.role, "role")
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +284,10 @@ func parseAnthropicMessage(raw jsontext.Value) ([]chat.Item, error) {
 	default:
 		return nil, chat.Invalid("messages.role", "Anthropic messages only support user and assistant roles")
 	}
-	rawContent, ok := object["content"]
-	if !ok {
+	if !decoder.content.Present() {
 		return nil, chat.Invalid("messages.content", "message content is required")
 	}
-	values, err := anthropicContent(rawContent)
+	values, err := anthropicContent(decoder.content)
 	if err != nil {
 		return nil, err
 	}
@@ -187,181 +312,319 @@ func parseAnthropicMessage(raw jsontext.Value) ([]chat.Item, error) {
 
 type anthropicContentValue struct{ item chat.Item }
 
-func anthropicContent(raw jsontext.Value) ([]anthropicContentValue, error) {
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
+type contentDecoder struct {
+	typeName  field
+	text      field
+	source    field
+	id        field
+	name      field
+	input     field
+	toolID    field
+	content   field
+	thinking  field
+	signature field
+	data      field
+	unknown   string
+}
+
+func (d *contentDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("type")):
+		d.typeName = value
+	case bytes.Equal(key, []byte("text")):
+		d.text = value
+	case bytes.Equal(key, []byte("source")):
+		d.source = value
+	case bytes.Equal(key, []byte("id")):
+		d.id = value
+	case bytes.Equal(key, []byte("name")):
+		d.name = value
+	case bytes.Equal(key, []byte("input")):
+		d.input = value
+	case bytes.Equal(key, []byte("tool_use_id")):
+		d.toolID = value
+	case bytes.Equal(key, []byte("content")):
+		d.content = value
+	case bytes.Equal(key, []byte("thinking")):
+		d.thinking = value
+	case bytes.Equal(key, []byte("signature")):
+		d.signature = value
+	case bytes.Equal(key, []byte("data")):
+		d.data = value
+	default:
+		if d.unknown == "" {
+			d.unknown = string(key)
+		}
+	}
+	return nil
+}
+
+func (d contentDecoder) rejectUnknown() error {
+	if d.unknown != "" {
+		return chat.Unsupported(d.unknown, "request field is not supported by llmux")
+	}
+	return nil
+}
+
+func anthropicContent(value field) ([]anthropicContentValue, error) {
+	if value.Type == jsonparser.String || value.Type == jsonparser.Null {
+		text, err := wire.String(value.Raw, value.Type)
+		if err != nil {
+			return nil, chat.Invalid("messages.content", "must be a string or array")
+		}
 		return []anthropicContentValue{{item: chat.MessageItem(chat.RoleUser, chat.TextPart(text))}}, nil
 	}
-	values, err := rawArray(raw, "messages.content")
-	if err != nil {
-		return nil, err
+	if value.Type != jsonparser.Array {
+		return nil, chat.Invalid("messages.content", "must be a JSON array")
 	}
-	out := make([]anthropicContentValue, 0, len(values))
-	for _, value := range values {
-		object, err := rawObject(value, "messages.content")
-		if err != nil {
-			return nil, err
+	out := make([]anthropicContentValue, 0, 4)
+	var parseErr error
+	_, err := jsonparser.ArrayEach(value.Raw, func(raw []byte, typ jsonparser.ValueType, _ int, callbackErr error) {
+		if parseErr != nil {
+			return
 		}
-		typeName, err := requireString(object, "type")
+		if callbackErr != nil {
+			parseErr = callbackErr
+			return
+		}
+		if typ != jsonparser.Object {
+			parseErr = chat.Invalid("messages.content", "must be a JSON object")
+			return
+		}
+		var decoder contentDecoder
+		if err := objectEach(raw, "messages.content", decoder.field); err != nil {
+			parseErr = err
+			return
+		}
+		typeName, err := requiredString(decoder.typeName, "type")
 		if err != nil {
-			return nil, err
+			parseErr = err
+			return
 		}
 		switch typeName {
 		case "text":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "text": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			text, err := requireString(object, "text")
+			text, err := requiredString(decoder.text, "text")
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
 			out = append(out, anthropicContentValue{item: chat.MessageItem(chat.RoleUser, chat.TextPart(text))})
 		case "image":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "source": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			media, err := parseAnthropicImage(object)
+			media, err := parseAnthropicImage(decoder.source)
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
 			out = append(out, anthropicContentValue{item: chat.MessageItem(chat.RoleUser, chat.ImagePart(media))})
 		case "document":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "source": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			media, err := parseAnthropicDocument(object)
+			media, err := parseAnthropicDocument(decoder.source)
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
 			out = append(out, anthropicContentValue{item: chat.MessageItem(chat.RoleUser, chat.FilePart(media))})
 		case "tool_use":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "id": true, "name": true, "input": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			callID, err := requireString(object, "id")
+			callID, err := requiredString(decoder.id, "id")
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
-			name, err := requireString(object, "name")
+			name, err := requiredString(decoder.name, "name")
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
-			input, ok := object["input"]
-			if !ok || !input.IsValid() {
-				return nil, chat.Invalid("messages.content.input", "tool input must be valid JSON")
+			if !decoder.input.Present() || !jsontext.Value(decoder.input.Raw).IsValid() {
+				parseErr = chat.Invalid("messages.content.input", "tool input must be valid JSON")
+				return
 			}
-			call := chat.FunctionCallItem(callID, name, string(input))
-			id, err := optionalString(object, "id")
-			if err != nil {
-				return nil, err
-			}
-			if id != "" {
-				call.ID = id
-			}
+			call := chat.FunctionCallItem(callID, name, string(decoder.input.Raw))
+			call.ID = callID
 			out = append(out, anthropicContentValue{item: call})
 		case "tool_result":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "tool_use_id": true, "content": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			callID, err := requireString(object, "tool_use_id")
+			callID, err := requiredString(decoder.toolID, "tool_use_id")
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
-			parts := []chat.Part{}
-			if rawContent, ok := object["content"]; ok {
-				content, err := anthropicContentParts(rawContent)
+			parts := []chat.Part(nil)
+			if decoder.content.Present() {
+				parts, err = anthropicContentParts(decoder.content)
 				if err != nil {
-					return nil, err
+					parseErr = err
+					return
 				}
-				parts = content
 			}
 			if len(parts) == 0 {
 				parts = []chat.Part{chat.TextPart("")}
 			}
 			out = append(out, anthropicContentValue{item: chat.FunctionCallOutputItem(callID, parts...)})
 		case "thinking":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "thinking": true, "signature": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			item := chat.Item{Type: chat.ItemReasoning, Data: append(jsontext.Value(nil), value...), Status: chat.StatusCompleted}
-			out = append(out, anthropicContentValue{item: item})
+			out = append(out, anthropicContentValue{item: chat.Item{Type: chat.ItemReasoning, Data: wire.Copy(raw), Status: chat.StatusCompleted}})
 		case "redacted_thinking":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "data": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			item := chat.Item{Type: chat.ItemReasoning, Data: append(jsontext.Value(nil), value...), Status: chat.StatusCompleted}
-			out = append(out, anthropicContentValue{item: item})
+			out = append(out, anthropicContentValue{item: chat.Item{Type: chat.ItemReasoning, Data: wire.Copy(raw), Status: chat.StatusCompleted}})
 		default:
-			return nil, chat.Unsupported("messages.content.type", "unsupported Anthropic content type "+typeName)
+			parseErr = chat.Unsupported("messages.content.type", "unsupported Anthropic content type "+typeName)
 		}
+	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if err != nil {
+		return nil, chat.Invalid("messages.content", "must be a JSON array")
 	}
 	return out, nil
 }
 
-func anthropicContentParts(raw jsontext.Value) ([]chat.Part, error) {
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
+func anthropicContentParts(value field) ([]chat.Part, error) {
+	if value.Type == jsonparser.String || value.Type == jsonparser.Null {
+		text, err := wire.String(value.Raw, value.Type)
+		if err != nil {
+			return nil, chat.Invalid("tool_result.content", "must be a string or array")
+		}
 		return []chat.Part{chat.TextPart(text)}, nil
 	}
-	values, err := rawArray(raw, "tool_result.content")
-	if err != nil {
-		return nil, err
+	if value.Type != jsonparser.Array {
+		return nil, chat.Invalid("tool_result.content", "must be a JSON array")
 	}
-	parts := make([]chat.Part, 0, len(values))
-	for _, value := range values {
-		object, err := rawObject(value, "tool_result.content")
-		if err != nil {
-			return nil, err
+	parts := make([]chat.Part, 0, 4)
+	var parseErr error
+	_, err := jsonparser.ArrayEach(value.Raw, func(raw []byte, typ jsonparser.ValueType, _ int, callbackErr error) {
+		if parseErr != nil {
+			return
 		}
-		typeName, err := requireString(object, "type")
+		if callbackErr != nil {
+			parseErr = callbackErr
+			return
+		}
+		if typ != jsonparser.Object {
+			parseErr = chat.Invalid("tool_result.content", "must be a JSON object")
+			return
+		}
+		var decoder contentDecoder
+		if err := objectEach(raw, "tool_result.content", decoder.field); err != nil {
+			parseErr = err
+			return
+		}
+		typeName, err := requiredString(decoder.typeName, "type")
 		if err != nil {
-			return nil, err
+			parseErr = err
+			return
 		}
 		switch typeName {
 		case "text":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "text": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			text, err := requireString(object, "text")
+			text, err := requiredString(decoder.text, "text")
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
 			parts = append(parts, chat.TextPart(text))
 		case "image":
-			if err := rejectUnknownStrict(object, map[string]bool{"type": true, "source": true}); err != nil {
-				return nil, err
+			if err := decoder.rejectUnknown(); err != nil {
+				parseErr = err
+				return
 			}
-			media, err := parseAnthropicImage(object)
+			media, err := parseAnthropicImage(decoder.source)
 			if err != nil {
-				return nil, err
+				parseErr = err
+				return
 			}
 			parts = append(parts, chat.ImagePart(media))
 		default:
-			return nil, chat.Unsupported("tool_result.content", "unsupported tool result type "+typeName)
+			parseErr = chat.Unsupported("tool_result.content", "unsupported tool result type "+typeName)
 		}
+	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if err != nil {
+		return nil, chat.Invalid("tool_result.content", "must be a JSON array")
 	}
 	return parts, nil
 }
 
-func parseAnthropicImage(object map[string]jsontext.Value) (chat.Media, error) {
-	source, err := rawObject(object["source"], "messages.content.source")
-	if err != nil {
+type sourceDecoder struct {
+	typeName field
+	media    field
+	data     field
+	url      field
+	unknown  string
+}
+
+func (d *sourceDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("type")):
+		d.typeName = value
+	case bytes.Equal(key, []byte("media_type")):
+		d.media = value
+	case bytes.Equal(key, []byte("data")):
+		d.data = value
+	case bytes.Equal(key, []byte("url")):
+		d.url = value
+	default:
+		if d.unknown == "" {
+			d.unknown = string(key)
+		}
+	}
+	return nil
+}
+
+func parseAnthropicImage(value field) (chat.Media, error) {
+	if value.Type != jsonparser.Object {
+		return chat.Media{}, chat.Invalid("messages.content.source", "must be a JSON object")
+	}
+	var source sourceDecoder
+	if err := objectEach(value.Raw, "messages.content.source", source.field); err != nil {
 		return chat.Media{}, err
 	}
-	typeName, err := requireString(source, "type")
+	typeName, err := requiredString(source.typeName, "type")
 	if err != nil {
 		return chat.Media{}, err
 	}
 	switch typeName {
 	case "base64":
-		if err := rejectUnknownStrict(source, map[string]bool{"type": true, "media_type": true, "data": true}); err != nil {
-			return chat.Media{}, err
+		if source.unknown != "" {
+			return chat.Media{}, chat.Unsupported(source.unknown, "request field is not supported by llmux")
 		}
-		mime, err := requireString(source, "media_type")
+		mime, err := requiredString(source.media, "media_type")
 		if err != nil {
 			return chat.Media{}, err
 		}
-		encoded, err := requireString(source, "data")
+		encoded, err := requiredString(source.data, "data")
 		if err != nil {
 			return chat.Media{}, err
 		}
@@ -374,10 +637,10 @@ func parseAnthropicImage(object map[string]jsontext.Value) (chat.Media, error) {
 		}
 		return chat.InlineMedia(mime, data), nil
 	case "url":
-		if err := rejectUnknownStrict(source, map[string]bool{"type": true, "url": true}); err != nil {
-			return chat.Media{}, err
+		if source.unknown != "" {
+			return chat.Media{}, chat.Unsupported(source.unknown, "request field is not supported by llmux")
 		}
-		value, err := requireString(source, "url")
+		value, err := requiredString(source.url, "url")
 		if err != nil {
 			return chat.Media{}, err
 		}
@@ -387,26 +650,29 @@ func parseAnthropicImage(object map[string]jsontext.Value) (chat.Media, error) {
 	}
 }
 
-func parseAnthropicDocument(object map[string]jsontext.Value) (chat.Media, error) {
-	source, err := rawObject(object["source"], "messages.content.source")
-	if err != nil {
+func parseAnthropicDocument(value field) (chat.Media, error) {
+	if value.Type != jsonparser.Object {
+		return chat.Media{}, chat.Invalid("messages.content.source", "must be a JSON object")
+	}
+	var source sourceDecoder
+	if err := objectEach(value.Raw, "messages.content.source", source.field); err != nil {
 		return chat.Media{}, err
 	}
-	typeName, err := requireString(source, "type")
+	typeName, err := requiredString(source.typeName, "type")
 	if err != nil {
 		return chat.Media{}, err
 	}
 	switch typeName {
 	case "base64":
-		if err := rejectUnknownStrict(source, map[string]bool{"type": true, "media_type": true, "data": true}); err != nil {
-			return chat.Media{}, err
+		if source.unknown != "" {
+			return chat.Media{}, chat.Unsupported(source.unknown, "request field is not supported by llmux")
 		}
-		mime, err := optionalString(source, "media_type")
+		mime, _, err := decodeString(source.media, "media_type")
 		if err != nil {
 			return chat.Media{}, err
 		}
 		mime = cmp.Or(mime, "application/octet-stream")
-		encoded, err := requireString(source, "data")
+		encoded, err := requiredString(source.data, "data")
 		if err != nil {
 			return chat.Media{}, err
 		}
@@ -416,10 +682,10 @@ func parseAnthropicDocument(object map[string]jsontext.Value) (chat.Media, error
 		}
 		return chat.InlineMedia(mime, data), nil
 	case "url":
-		if err := rejectUnknownStrict(source, map[string]bool{"type": true, "url": true}); err != nil {
-			return chat.Media{}, err
+		if source.unknown != "" {
+			return chat.Media{}, chat.Unsupported(source.unknown, "request field is not supported by llmux")
 		}
-		value, err := requireString(source, "url")
+		value, err := requiredString(source.url, "url")
 		if err != nil {
 			return chat.Media{}, err
 		}
@@ -429,91 +695,224 @@ func parseAnthropicDocument(object map[string]jsontext.Value) (chat.Media, error
 	}
 }
 
-func parseAnthropicSystem(raw jsontext.Value) (string, error) {
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text, nil
+type thinkingDecoder struct {
+	typeName field
+	unknown  string
+}
+
+func (d *thinkingDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	if bytes.Equal(key, []byte("type")) {
+		d.typeName = field{Raw: raw, Type: typ}
+		return nil
 	}
-	values, err := rawArray(raw, "system")
-	if err != nil {
-		return "", err
+	if d.unknown == "" {
+		d.unknown = string(key)
+	}
+	return nil
+}
+
+type systemDecoder struct {
+	typeName field
+	text     field
+	unknown  string
+}
+
+func (d *systemDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("type")):
+		d.typeName = value
+	case bytes.Equal(key, []byte("text")):
+		d.text = value
+	default:
+		if d.unknown == "" {
+			d.unknown = string(key)
+		}
+	}
+	return nil
+}
+
+func parseAnthropicSystem(value field) (string, error) {
+	if !value.Present() {
+		return "", nil
+	}
+	if value.Type == jsonparser.String || value.Type == jsonparser.Null {
+		return wire.String(value.Raw, value.Type)
+	}
+	if value.Type != jsonparser.Array {
+		return "", chat.Invalid("system", "must be a JSON array")
 	}
 	var builder strings.Builder
-	for _, value := range values {
-		object, err := rawObject(value, "system")
-		if err != nil {
-			return "", err
+	var parseErr error
+	_, err := jsonparser.ArrayEach(value.Raw, func(raw []byte, typ jsonparser.ValueType, _ int, callbackErr error) {
+		if parseErr != nil {
+			return
 		}
-		typeName, err := requireString(object, "type")
+		if callbackErr != nil {
+			parseErr = callbackErr
+			return
+		}
+		if typ != jsonparser.Object {
+			parseErr = chat.Invalid("system", "must be a JSON object")
+			return
+		}
+		var decoder systemDecoder
+		if err := objectEach(raw, "system", decoder.field); err != nil {
+			parseErr = err
+			return
+		}
+		typeName, err := requiredString(decoder.typeName, "type")
 		if err != nil {
-			return "", err
+			parseErr = err
+			return
 		}
 		if typeName != "text" {
-			return "", chat.Unsupported("system", "only text system blocks are supported")
+			parseErr = chat.Unsupported("system", "only text system blocks are supported")
+			return
 		}
-		if err := rejectUnknownStrict(object, map[string]bool{"type": true, "text": true}); err != nil {
-			return "", err
+		if decoder.unknown != "" {
+			parseErr = chat.Unsupported(decoder.unknown, "request field is not supported by llmux")
+			return
 		}
-		value, err := requireString(object, "text")
+		text, err := requiredString(decoder.text, "text")
 		if err != nil {
-			return "", err
+			parseErr = err
+			return
 		}
-		builder.WriteString(value)
+		builder.WriteString(text)
+	})
+	if parseErr != nil {
+		return "", parseErr
+	}
+	if err != nil {
+		return "", chat.Invalid("system", "must be a JSON array")
 	}
 	return builder.String(), nil
 }
 
-func parseAnthropicTools(raw jsontext.Value) ([]chat.FunctionTool, error) {
-	values, err := rawArray(raw, "tools")
-	if err != nil {
-		return nil, err
+type toolDecoder struct {
+	name        field
+	description field
+	inputSchema field
+	unknown     string
+}
+
+func (d *toolDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("name")):
+		d.name = value
+	case bytes.Equal(key, []byte("description")):
+		d.description = value
+	case bytes.Equal(key, []byte("input_schema")):
+		d.inputSchema = value
+	default:
+		if d.unknown == "" {
+			d.unknown = string(key)
+		}
 	}
-	tools := make([]chat.FunctionTool, 0, len(values))
-	for _, value := range values {
-		object, err := rawObject(value, "tools")
+	return nil
+}
+
+func parseAnthropicTools(value field) ([]chat.FunctionTool, error) {
+	if value.Type != jsonparser.Array {
+		return nil, chat.Invalid("tools", "must be a JSON array")
+	}
+	tools := make([]chat.FunctionTool, 0, 4)
+	var parseErr error
+	_, err := jsonparser.ArrayEach(value.Raw, func(raw []byte, typ jsonparser.ValueType, _ int, callbackErr error) {
+		if parseErr != nil {
+			return
+		}
+		if callbackErr != nil {
+			parseErr = callbackErr
+			return
+		}
+		if typ != jsonparser.Object {
+			parseErr = chat.Invalid("tools", "must be a JSON object")
+			return
+		}
+		var decoder toolDecoder
+		if err := objectEach(raw, "tools", decoder.field); err != nil {
+			parseErr = err
+			return
+		}
+		if decoder.unknown != "" {
+			parseErr = chat.Unsupported(decoder.unknown, "request field is not supported by llmux")
+			return
+		}
+		name, err := requiredString(decoder.name, "name")
 		if err != nil {
-			return nil, err
+			parseErr = err
+			return
 		}
-		if err := rejectUnknownStrict(object, map[string]bool{"name": true, "description": true, "input_schema": true}); err != nil {
-			return nil, err
+		inputSchema := decoder.inputSchema
+		if !inputSchema.Present() || !jsontext.Value(inputSchema.Raw).IsValid() {
+			parseErr = chat.Invalid("tools.input_schema", "input_schema must be valid JSON")
+			return
 		}
-		name, err := requireString(object, "name")
+		description, _, err := decodeString(decoder.description, "description")
 		if err != nil {
-			return nil, err
+			parseErr = err
+			return
 		}
-		inputSchema, ok := object["input_schema"]
-		if !ok || !inputSchema.IsValid() {
-			return nil, chat.Invalid("tools.input_schema", "input_schema must be valid JSON")
-		}
-		description, err := optionalString(object, "description")
-		if err != nil {
-			return nil, err
-		}
-		tools = append(tools, chat.FunctionTool{Name: name, Description: description, Parameters: append(jsontext.Value(nil), inputSchema...)})
+		tools = append(tools, chat.FunctionTool{
+			Name: name, Description: description, Parameters: wire.Copy(inputSchema.Raw),
+		})
+	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if err != nil {
+		return nil, chat.Invalid("tools", "must be a JSON array")
 	}
 	return tools, nil
 }
 
-func parseAnthropicToolChoice(raw jsontext.Value) (*chat.ToolChoice, error) {
-	object, err := rawObject(raw, "tool_choice")
-	if err != nil {
+type toolChoiceDecoder struct {
+	typeName field
+	name     field
+	unknown  string
+}
+
+func (d *toolChoiceDecoder) field(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+	value := field{Raw: raw, Type: typ}
+	switch {
+	case bytes.Equal(key, []byte("type")):
+		d.typeName = value
+	case bytes.Equal(key, []byte("name")):
+		d.name = value
+	default:
+		if d.unknown == "" {
+			d.unknown = string(key)
+		}
+	}
+	return nil
+}
+
+func parseAnthropicToolChoice(value field) (*chat.ToolChoice, error) {
+	if value.Type != jsonparser.Object {
+		return nil, chat.Invalid("tool_choice", "must be a JSON object")
+	}
+	var decoder toolChoiceDecoder
+	if err := objectEach(value.Raw, "tool_choice", decoder.field); err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownStrict(object, map[string]bool{"type": true, "name": true}); err != nil {
-		return nil, err
+	if decoder.unknown != "" {
+		return nil, chat.Unsupported(decoder.unknown, "request field is not supported by llmux")
 	}
-	typeName, err := requireString(object, "type")
+	typeName, err := requiredString(decoder.typeName, "type")
 	if err != nil {
 		return nil, err
 	}
 	switch typeName {
 	case "auto", "none", "any":
-		if _, ok := object["name"]; ok {
+		if decoder.name.Present() {
 			return nil, chat.Invalid("tool_choice.name", "tool_choice name is only valid for type tool")
 		}
 		return &chat.ToolChoice{Mode: typeName}, nil
 	case "tool":
-		name, err := requireString(object, "name")
+		name, err := requiredString(decoder.name, "name")
 		if err != nil {
 			return nil, err
 		}
@@ -521,4 +920,102 @@ func parseAnthropicToolChoice(raw jsontext.Value) (*chat.ToolChoice, error) {
 	default:
 		return nil, chat.Unsupported("tool_choice.type", "unsupported Anthropic tool choice "+typeName)
 	}
+}
+
+func parseMetadata(value field) (map[string]string, error) {
+	if !value.Present() || value.Type == jsonparser.Null {
+		return nil, nil
+	}
+	if value.Type != jsonparser.Object {
+		return nil, fmtError("metadata", "metadata must be an object of strings", wire.ErrType)
+	}
+	metadata := make(map[string]string)
+	err := jsonparser.ObjectEach(value.Raw, func(key, raw []byte, typ jsonparser.ValueType, _ int) error {
+		decoded, err := wire.String(raw, typ)
+		if err != nil {
+			return fmtError("metadata", "metadata must be an object of strings", err)
+		}
+		metadata[string(key)] = decoded
+		return nil
+	})
+	if err != nil {
+		if _, ok := err.(*chat.Error); ok {
+			return nil, err
+		}
+		return nil, fmtError("metadata", "metadata must be an object of strings", err)
+	}
+	return metadata, nil
+}
+
+func objectEach(raw []byte, param string, callback func([]byte, []byte, jsonparser.ValueType, int) error) error {
+	if err := jsonparser.ObjectEach(raw, callback); err != nil {
+		if _, ok := err.(*chat.Error); ok {
+			return err
+		}
+		return chat.Invalid(param, "must be a JSON object")
+	}
+	return nil
+}
+
+func requiredString(value field, key string) (string, error) {
+	decoded, ok, err := decodeString(value, key)
+	if err != nil {
+		return "", err
+	}
+	if !ok || strings.TrimSpace(decoded) == "" {
+		return "", chat.Invalid(key, key+" is required")
+	}
+	return decoded, nil
+}
+
+func decodeString(value field, key string) (string, bool, error) {
+	if !value.Present() {
+		return "", false, nil
+	}
+	decoded, err := wire.String(value.Raw, value.Type)
+	if err != nil {
+		return "", true, chat.Invalid(key, "must be a string")
+	}
+	return decoded, true, nil
+}
+
+func decodeBool(value field, key string) (*bool, error) {
+	if !value.Present() {
+		return nil, nil
+	}
+	decoded, err := wire.Bool(value.Raw, value.Type)
+	if err != nil {
+		return nil, chat.Invalid(key, "must be a boolean")
+	}
+	return &decoded, nil
+}
+
+func decodeFloat(value field, key string) (*float64, error) {
+	if !value.Present() {
+		return nil, nil
+	}
+	decoded, err := wire.Float(value.Raw, value.Type)
+	if err != nil {
+		return nil, chat.Invalid(key, "must be a number")
+	}
+	return &decoded, nil
+}
+
+func decodeInt(value field, key string) (*int, error) {
+	if !value.Present() {
+		return nil, nil
+	}
+	decoded, err := wire.Int(value.Raw, value.Type)
+	if err != nil {
+		return nil, chat.Invalid(key, "must be an integer")
+	}
+	return &decoded, nil
+}
+
+func decodeStrings(value field, key string) ([]string, error) {
+	values, err := wire.Strings(value.Raw, value.Type)
+	if err != nil {
+		return nil, chat.Invalid(key, "must be an array of strings")
+	}
+	return values, nil
 }

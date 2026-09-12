@@ -4,7 +4,6 @@
 package responses
 
 import (
-	"encoding/json/jsontext"
 	"net/http"
 	"strings"
 
@@ -23,32 +22,8 @@ const protocolResponses = internalprotocol.Responses
 
 func newID() string { return xid.New().String() }
 
-func rejectUnknown(object map[string]jsontext.Value, allowed map[string]bool) error {
-	return wire.RejectUnknown(object, allowed)
-}
-func rejectUnknownStrict(object map[string]jsontext.Value, allowed map[string]bool) error {
-	return wire.RejectUnknownStrict(object, allowed)
-}
-func namespacedExtensions(object map[string]jsontext.Value, allowed map[string]bool) map[string]jsontext.Value {
-	return wire.NamespacedExtensions(object, allowed)
-}
-func rawObject(raw jsontext.Value, param string) (map[string]jsontext.Value, error) {
-	return wire.RawObject(raw, param)
-}
-func rawArray(raw jsontext.Value, param string) ([]jsontext.Value, error) {
-	return wire.RawArray(raw, param)
-}
-func requireString(object map[string]jsontext.Value, key string) (string, error) {
-	return wire.RequireString(object, key)
-}
-func parseStringOrContent(raw jsontext.Value, param string, parser func(jsontext.Value) ([]chat.Part, error)) ([]chat.Part, error) {
-	return wire.ParseStringOrContent(raw, param, parser)
-}
 func parseMediaURL(value, detail string) (chat.Media, error) {
 	return wire.ParseMediaURL(value, detail)
-}
-func parseFileMedia(object map[string]jsontext.Value, param string) (chat.Media, string, error) {
-	return wire.ParseFileMedia(object, param)
 }
 func inputTextParts(parts []chat.Part) []map[string]any { return wire.InputTextParts(parts) }
 func outputTextParts(parts []chat.Part) []wireOutputText {
@@ -66,18 +41,6 @@ func fmtError(param, message string, err error) *chat.Error {
 	return wire.Error(param, message, err)
 }
 func validRole(role chat.Role) bool { return chat.ValidRole(role) }
-func decodeString(object map[string]jsontext.Value, key string) (string, bool, error) {
-	return wire.DecodeString(object, key)
-}
-func decodeBool(object map[string]jsontext.Value, key string) (*bool, error) {
-	return wire.DecodeBool(object, key)
-}
-func decodeInt(object map[string]jsontext.Value, key string) (*int, error) {
-	return wire.DecodeInt(object, key)
-}
-func decodeFloat(object map[string]jsontext.Value, key string) (*float64, error) {
-	return wire.DecodeFloat(object, key)
-}
 
 type sseWriter struct {
 	w       http.ResponseWriter

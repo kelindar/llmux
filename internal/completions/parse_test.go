@@ -4,13 +4,13 @@
 package completions
 
 import (
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/buger/jsonparser"
 	chat "github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
@@ -19,11 +19,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
+func decodeObject(t *testing.T, raw string) []byte {
 	t.Helper()
-	object, err := wire.DecodeObject([]byte(raw))
+	data := []byte(raw)
+	require.NoError(t, wire.ValidateObject(data))
+	return data
+}
+
+func decodeField(t *testing.T, raw string) field {
+	t.Helper()
+	value, typ, _, err := jsonparser.Get([]byte(raw))
 	require.NoError(t, err)
-	return object
+	return field{Raw: value, Type: typ}
 }
 
 func requireAPIError(t *testing.T, err error, code, param string) {
@@ -552,6 +559,94 @@ func TestParseRequestExtra(t *testing.T) {
 	}
 }
 
+func TestParseContentCoverage(t *testing.T) {
+	cases := map[string]struct {
+		raw     string
+		wantErr bool
+		check   func(t *testing.T, parts []chat.Part)
+	}{
+		"null": {raw: `null`},
+		"plainText": {
+			raw: `"hello"`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartText, parts[0].Type)
+			},
+		},
+		"wrongType":       {raw: `1`, wantErr: true},
+		"emptyArray":      {raw: `[]`},
+		"partWrongType":   {raw: `[1]`, wantErr: true},
+		"partMissingType": {raw: `[{}]`, wantErr: true},
+		"textPart": {
+			raw: `[{"type":"text","text":"hello"}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, "hello", parts[0].Text)
+			},
+		},
+		"textMissing":      {raw: `[{"type":"text"}]`, wantErr: true},
+		"textWrongType":    {raw: `[{"type":"text","text":1}]`, wantErr: true},
+		"textMixed":        {raw: `[{"type":"text","text":"x","file":{}}]`, wantErr: true},
+		"unknownPartField": {raw: `[{"type":"text","text":"x","extra":true}]`, wantErr: true},
+		"imageURL": {
+			raw: `[{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"high"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartImage, parts[0].Type)
+				assert.Equal(t, "high", parts[0].Detail)
+			},
+		},
+		"imageWrongObject": {raw: `[{"type":"image_url","image_url":"url"}]`, wantErr: true},
+		"imageMissingURL":  {raw: `[{"type":"image_url","image_url":{}}]`, wantErr: true},
+		"imageBadDetail":   {raw: `[{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"bad"}}]`, wantErr: true},
+		"imageBadURL":      {raw: `[{"type":"image_url","image_url":{"url":"ftp://example.com/a.png"}}]`, wantErr: true},
+		"audioMP3": {
+			raw: `[{"type":"input_audio","input_audio":{"data":"YQ==","format":"mp3"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartAudio, parts[0].Type)
+				assert.Equal(t, "mp3", parts[0].Media.Format)
+			},
+		},
+		"audioWrongObject":  {raw: `[{"type":"input_audio","input_audio":"audio"}]`, wantErr: true},
+		"audioUnknownField": {raw: `[{"type":"input_audio","input_audio":{"data":"YQ==","format":"wav","extra":true}}]`, wantErr: true},
+		"audioBadData":      {raw: `[{"type":"input_audio","input_audio":{"data":"!!!","format":"wav"}}]`, wantErr: true},
+		"audioBadFormat":    {raw: `[{"type":"input_audio","input_audio":{"data":"YQ==","format":"flac"}}]`, wantErr: true},
+		"fileURL": {
+			raw: `[{"type":"file","file":{"file_url":"https://example.com/a.txt","filename":"a.txt"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartFile, parts[0].Type)
+				assert.Equal(t, "https://example.com/a.txt", parts[0].Media.URL)
+			},
+		},
+		"fileID": {
+			raw: `[{"type":"file","file":{"file_id":"file-1"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, "file-1", parts[0].Media.Ref)
+			},
+		},
+		"fileMissingObject":   {raw: `[{"type":"file"}]`, wantErr: true},
+		"fileMultipleSources": {raw: `[{"type":"file","file":{"file_id":"file-1","file_url":"https://example.com/a"}}]`, wantErr: true},
+		"fileUnknownField":    {raw: `[{"type":"file","file":{"file_id":"file-1","extra":true}}]`, wantErr: true},
+		"unknownType":         {raw: `[{"type":"video"}]`, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parts, err := parseChatContent(decodeField(t, tc.raw))
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tc.check != nil {
+				tc.check(t, parts)
+			}
+		})
+	}
+}
+
 func TestAdapterConstruct(t *testing.T) {
 	assert.NotNil(t, NewAdapter())
 }
@@ -652,14 +747,119 @@ func TestParseRequestRejects(t *testing.T) {
 	}
 }
 
+func TestParseControls(t *testing.T) {
+	cases := map[string]struct {
+		body  string
+		check func(t *testing.T, parsed parsedRequest)
+	}{
+		"maxCompletionTokens": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"max_completion_tokens":12}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.MaxOutputTokens)
+				assert.Equal(t, 12, *parsed.Request.Controls.MaxOutputTokens)
+			},
+		},
+		"toolWithoutWrapper": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tools":[{"function":{"name":"lookup"}}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Controls.Tools, 1)
+				assert.Equal(t, "lookup", parsed.Request.Controls.Tools[0].Name)
+			},
+		},
+		"strictTool": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","strict":true}}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Controls.Tools, 1)
+				require.NotNil(t, parsed.Request.Controls.Tools[0].Strict)
+				assert.True(t, *parsed.Request.Controls.Tools[0].Strict)
+			},
+		},
+		"streamOptionsWithoutUsage": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stream_options":{}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.False(t, parsed.IncludeUsage)
+			},
+		},
+		"nullControls": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stop":null,"store":null,"stream":null}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Nil(t, parsed.Request.Controls.Stop)
+				require.NotNil(t, parsed.Store)
+				assert.False(t, *parsed.Store)
+				assert.False(t, parsed.Stream)
+			},
+		},
+		"jsonSchemaDefaults": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"result","schema":{"type":"object"}}}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, chat.FormatJSONSchema, parsed.Request.Output.Format.Kind)
+				assert.False(t, parsed.Request.Output.Format.Strict)
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := ParseRequest(decodeObject(t, tc.body))
+			require.NoError(t, err)
+			tc.check(t, parsed)
+		})
+	}
+}
+
+func TestParseControlErrors(t *testing.T) {
+	base := `"model":"gpt-4","messages":[{"role":"user","content":"x"}]`
+	cases := map[string]string{
+		"invalidMaxCompletionTokens":  `{` + base + `,"max_completion_tokens":"12"}`,
+		"negativeMaxCompletionTokens": `{` + base + `,"max_completion_tokens":0}`,
+		"invalidTopPRange":            `{` + base + `,"top_p":2}`,
+		"stopArrayValue":              `{` + base + `,"stop":["ok",1]}`,
+		"toolsNotArray":               `{` + base + `,"tools":{}}`,
+		"toolNotObject":               `{` + base + `,"tools":[1]}`,
+		"toolUnknownField":            `{` + base + `,"tools":[{"function":{"name":"f"},"extra":true}]}`,
+		"toolMissingFunction":         `{` + base + `,"tools":[{}]}`,
+		"toolFunctionNotObject":       `{` + base + `,"tools":[{"function":"f"}]}`,
+		"toolMissingName":             `{` + base + `,"tools":[{"function":{}}]}`,
+		"toolBadDescription":          `{` + base + `,"tools":[{"function":{"name":"f","description":1}}]}`,
+		"toolBadStrict":               `{` + base + `,"tools":[{"function":{"name":"f","strict":"yes"}}]}`,
+		"toolCallNotObject":           `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[1]}]}`,
+		"toolCallMissingFunction":     `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1"}]}]}`,
+		"toolCallFunctionNotObject":   `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":"f"}]}]}`,
+		"toolCallMissingName":         `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{}}]}]}`,
+		"toolCallMissingArguments":    `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"f"}}]}]}`,
+		"toolCallBadType":             `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":1,"function":{"name":"f","arguments":"{}"}}]}]}`,
+		"toolCallUnknownField":        `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"f","arguments":"{}","extra":true}}]}]}`,
+		"toolChoiceFunctionField":     `{` + base + `,"tool_choice":{"type":"function","function":{"name":"f"},"name":"legacy"}}`,
+		"toolChoiceFunctionNotObject": `{` + base + `,"tool_choice":{"type":"function","function":"f"}}`,
+		"toolChoiceMissingType":       `{` + base + `,"tool_choice":{}}`,
+		"toolChoiceBadType":           `{` + base + `,"tool_choice":{"type":1,"name":"f"}}`,
+		"toolChoiceMissingName":       `{` + base + `,"tool_choice":{"type":"function"}}`,
+		"invalidModalitiesType":       `{` + base + `,"modalities":"text"}`,
+		"invalidModalityElement":      `{` + base + `,"modalities":[1]}`,
+		"audioNotObject":              `{` + base + `,"audio":"wav"}`,
+		"audioMissingFormat":          `{` + base + `,"audio":{"voice":"alloy"}}`,
+		"streamOptionsNotObject":      `{` + base + `,"stream_options":true}`,
+		"streamOptionsBadUsage":       `{` + base + `,"stream_options":{"include_usage":"yes"}}`,
+		"responseFormatNotObject":     `{` + base + `,"response_format":"json_object"}`,
+		"responseFormatMissingType":   `{` + base + `,"response_format":{}}`,
+		"schemaNotObject":             `{` + base + `,"response_format":{"type":"json_schema","json_schema":true}}`,
+		"schemaUnknownField":          `{` + base + `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{},"extra":true}}}`,
+		"schemaBadDescription":        `{` + base + `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{},"description":1}}}`,
+		"schemaBadStrict":             `{` + base + `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{},"strict":"yes"}}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest(decodeObject(t, body))
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestWireDelegates(t *testing.T) {
 	media, err := parseMediaURL("https://example.com/a.png", "auto")
 	require.NoError(t, err)
 	assert.Equal(t, "https://example.com/a.png", media.URL)
 
-	fileObject, err := rawObject(jsontext.Value(`{"file_data":"YQ==","filename":"a.txt"}`), "file")
-	require.NoError(t, err)
-	fileMedia, name, err := parseFileMedia(fileObject, "file")
+	fileMedia, name, err := parseFileMedia([]byte(`{"file_data":"YQ==","filename":"a.txt"}`), "file")
 	require.NoError(t, err)
 	assert.Equal(t, "a.txt", name)
 	assert.NotEmpty(t, fileMedia.Data)
@@ -842,4 +1042,42 @@ func TestAdapterStreamFail(t *testing.T) {
 		require.NoError(t, stream.Fail(chat.Invalid("model", "bad")))
 		assert.Contains(t, rec.Body.String(), `"param":"model"`)
 	})
+}
+
+func TestParseRawContract(t *testing.T) {
+	body := []byte(`{"model":"m\u006fdel","messages":[{"role":"user","content":"hello \u2603"}],"max_tokens":3,"metadata":{"k":"v"},"x-meta":{"n":1}}`)
+	parsed, err := ParseRequest(body)
+	require.NoError(t, err)
+	assert.Equal(t, "model", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	require.NotNil(t, parsed.Request.Controls.MaxOutputTokens)
+	assert.Equal(t, 3, *parsed.Request.Controls.MaxOutputTokens)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	for i := range body {
+		body[i] = 'x'
+	}
+	assert.Equal(t, "model", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	cases := map[string]struct {
+		body  string
+		param string
+	}{
+		"missing":         {`{"model":"m"}`, "messages"},
+		"null":            {`{"model":"m","messages":null}`, "messages"},
+		"wrongType":       {`{"model":"m","messages":[{"role":"user","content":"x"}],"max_tokens":1.0}`, "max_tokens"},
+		"duplicate":       {`{"model":"m","messages":[],"model":"m2"}`, "body"},
+		"trailing":        {`{"model":"m","messages":[]} {}`, "body"},
+		"malformedNested": {`{"model":"m","messages":[{"role":"user","content":[}`, "body"},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest([]byte(test.body))
+			requireAPIError(t, err, "invalid_request", test.param)
+		})
+	}
 }

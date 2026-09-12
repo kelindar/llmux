@@ -531,3 +531,112 @@ func TestFileOutputReject(t *testing.T) {
 		"/chat/completions", `{"model":"agent/file","messages":[{"role":"user","content":"pdf"}]}`, nil)
 	assert.GreaterOrEqual(t, recorder.Code, http.StatusBadRequest)
 }
+
+func TestResponseStatusMapping(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     chat.Status
+		stop       chat.StopReason
+		runErr     error
+		wantStatus chat.Status
+		wantReason string
+	}{
+		{name: "completed", wantStatus: chat.StatusCompleted},
+		{name: "incompleteLength", status: chat.StatusIncomplete, stop: chat.StopLength, wantStatus: chat.StatusIncomplete, wantReason: "max_output_tokens"},
+		{name: "incompleteUnknown", status: chat.StatusIncomplete, wantStatus: chat.StatusIncomplete, wantReason: "incomplete"},
+		{name: "cancelled", status: chat.StatusCancelled, runErr: errors.New("cancelled"), wantStatus: chat.StatusCancelled},
+		{name: "failed", runErr: errors.New("backend"), wantStatus: chat.StatusFailed},
+		{name: "inProgress", status: chat.StatusInProgress, wantStatus: chat.StatusInProgress},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := buildResponse(chat.Response{ID: "resp_1"}, internalexecution.Result{Outcome: chat.Outcome{Status: tc.status, StopReason: tc.stop}}, tc.runErr)
+			assert.Equal(t, tc.wantStatus, resp.Status)
+			assert.Equal(t, tc.wantReason, resp.Incomplete)
+			if tc.name == "inProgress" {
+				assert.Zero(t, resp.CompletedAt)
+			}
+			if tc.runErr != nil {
+				require.NotNil(t, resp.Error)
+				assert.Empty(t, resp.Error.Err)
+			}
+		})
+	}
+
+	assert.Equal(t, chat.StopError, outcomeFromResponse(chat.Response{Status: chat.StatusFailed}).StopReason)
+	assert.Equal(t, chat.StopCancelled, outcomeFromResponse(chat.Response{Status: chat.StatusCancelled}).StopReason)
+	assert.Equal(t, chat.StopLength, outcomeFromResponse(chat.Response{Status: chat.StatusIncomplete, Incomplete: "max_output_tokens"}).StopReason)
+}
+
+type deliveryFailureWriter struct {
+	header http.Header
+	code   int
+	writes int
+}
+
+func (w *deliveryFailureWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *deliveryFailureWriter) WriteHeader(code int) { w.code = code }
+
+func (w *deliveryFailureWriter) Write([]byte) (int, error) {
+	w.writes++
+	return 0, errors.New("client disconnected")
+}
+
+func (w *deliveryFailureWriter) Flush() {}
+
+func TestDeliveryFinalization(t *testing.T) {
+	life := newMemoryLife()
+	life.boundCleanup = true
+	handler := testHandler(chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("ok"))
+	}), chat.Info{Continuation: true}, WithStore(life))
+
+	recorder := &deliveryFailureWriter{}
+	request := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"agent/basic","stream":true,"store":true,"input":"x"}`))
+	request = request.WithContext(context.WithValue(request.Context(), ctxKey{}, "delivery-test"))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusOK, recorder.code)
+	assert.Equal(t, 1, recorder.writes)
+	assert.Equal(t, 1, life.finals, "execution must still be finalized after a bounded delivery failure")
+}
+
+func TestReplayOutputContract(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(strconv.FormatBool(stream), func(t *testing.T) {
+			life := newMemoryLife()
+			life.byKey["replay"] = replayEntry{response: chat.Response{
+				ID:     "resp_replay",
+				Target: "agent/basic",
+				Output: []chat.Item{{Type: chat.ItemExtension}},
+			}}
+			handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+				t.Fatal("replayed requests must not execute the agent")
+				return chat.Outcome{}, nil
+			}), chat.Info{Continuation: true}, WithStore(life))
+			body := `{"model":"agent/basic","stream":` + strconv.FormatBool(stream) + `,"store":true,"input":"x"}`
+			recorder := postJSON(t, handler, "/responses", body, map[string]string{"Idempotency-Key": "replay"})
+			if stream {
+				require.Equal(t, http.StatusOK, recorder.Code)
+				assert.Contains(t, recorder.Body.String(), "response.failed")
+				return
+			}
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			assert.Equal(t, "unsupported", responseError(t, recorder)["code"])
+		})
+	}
+}
+
+func TestNewID(t *testing.T) {
+	first := newID()
+	second := newID()
+	require.NotEmpty(t, first)
+	assert.NotEqual(t, first, second)
+}

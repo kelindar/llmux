@@ -20,7 +20,6 @@ import (
 	completions "github.com/kelindar/llmux/internal/completions"
 	"github.com/kelindar/llmux/internal/execution"
 	"github.com/kelindar/llmux/internal/responses"
-	"github.com/kelindar/llmux/internal/wire"
 )
 
 var keep any
@@ -42,19 +41,6 @@ func main() {
 	responsesBody := []byte(`{"model":"bench","input":"hello"}`)
 	anthropicBody := []byte(`{"model":"bench","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
 
-	chatObject, err := wire.DecodeObject(chatBody)
-	if err != nil {
-		panic(err)
-	}
-	responsesObject, err := wire.DecodeObject(responsesBody)
-	if err != nil {
-		panic(err)
-	}
-	anthropicObject, err := wire.DecodeObject(anthropicBody)
-	if err != nil {
-		panic(err)
-	}
-
 	agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
 	})
@@ -68,10 +54,6 @@ func main() {
 	)
 
 	bench.Run(func(b *bench.B) {
-		b.Run("wire/decode", func(int) {
-			keep, _ = wire.DecodeObject(chatBody)
-		})
-
 		b.Run("exec/run", func(int) {
 			result, err := execution.Run(context.Background(), &chat.Request{Target: "bench"}, agent, chat.DefaultLimits(), nil)
 			if err != nil {
@@ -81,21 +63,30 @@ func main() {
 		})
 		b.Run("chat/models", func(int) { keep = serve(handler, "/models", nil, "GET") })
 		b.Run("chat/parse", func(int) {
-			keep, _ = completions.ParseRequest(chatObject)
+			keep, _ = completions.ParseRequest(chatBody)
+		})
+		b.Run("chat/raw-parse", func(int) {
+			keep, _ = completions.ParseRequest(chatBody)
 		})
 		b.Run("chat/completion", func(int) { keep = serve(handler, "/chat/completions", chatBody, "") })
 		b.Run("chat/stream", func(int) {
 			keep = serve(handler, "/chat/completions", []byte(`{"model":"bench","stream":true,"messages":[{"role":"user","content":"hello"}]}`), "")
 		})
 		b.Run("responses/parse", func(int) {
-			keep, _ = responses.ParseRequest(responsesObject)
+			keep, _ = responses.ParseRequest(responsesBody)
+		})
+		b.Run("responses/raw-parse", func(int) {
+			keep, _ = responses.ParseRequest(responsesBody)
 		})
 		b.Run("responses/http", func(int) { keep = serve(handler, "/responses", responsesBody, "") })
 		b.Run("responses/stream", func(int) {
 			keep = serve(handler, "/responses", []byte(`{"model":"bench","stream":true,"input":"hello"}`), "")
 		})
 		b.Run("anthropic/parse", func(int) {
-			keep, _ = anthropic.ParseRequest(anthropicObject)
+			keep, _ = anthropic.ParseRequest(anthropicBody)
+		})
+		b.Run("anthropic/raw-parse", func(int) {
+			keep, _ = anthropic.ParseRequest(anthropicBody)
 		})
 		b.Run("anthropic/http", func(int) { keep = serve(handler, "/messages", anthropicBody, "anthropic-version: 2023-06-01") })
 		b.Run("anthropic/stream", func(int) {

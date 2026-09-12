@@ -13,6 +13,9 @@ import (
 	"github.com/kelindar/llmux"
 	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
+	"github.com/kelindar/llmux/internal/anthropic"
+	completions "github.com/kelindar/llmux/internal/completions"
+	"github.com/kelindar/llmux/internal/responses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,4 +58,63 @@ func TestMainPackageBuild(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), "ok")
+}
+
+func BenchmarkRequestPaths(b *testing.B) {
+	chatBody := []byte(`{"model":"bench","messages":[{"role":"user","content":"hello"}]}`)
+	responsesBody := []byte(`{"model":"bench","input":"hello"}`)
+	anthropicBody := []byte(`{"model":"bench","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.Text("ok"))
+	})
+	handler := llmux.New(benchCatalog{agent: agent})
+
+	b.Run("chat/raw-parse", func(b *testing.B) {
+		b.ReportAllocs()
+		var err error
+		for i := 0; i < b.N; i++ {
+			keep, err = completions.ParseRequest(chatBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("chat/http", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			keep = serve(handler, "/chat/completions", chatBody, "")
+		}
+	})
+	b.Run("responses/raw-parse", func(b *testing.B) {
+		b.ReportAllocs()
+		var err error
+		for i := 0; i < b.N; i++ {
+			keep, err = responses.ParseRequest(responsesBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses/http", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			keep = serve(handler, "/responses", responsesBody, "")
+		}
+	})
+	b.Run("anthropic/raw-parse", func(b *testing.B) {
+		b.ReportAllocs()
+		var err error
+		for i := 0; i < b.N; i++ {
+			keep, err = anthropic.ParseRequest(anthropicBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("anthropic/http", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			keep = serve(handler, "/messages", anthropicBody, "anthropic-version: 2023-06-01")
+		}
+	})
 }

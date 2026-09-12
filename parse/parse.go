@@ -22,9 +22,9 @@ type Request = internalprotocol.ParsedRequest
 // Callers that accept non-x application fields should remove those keys
 // before calling Responses; x- and namespaced keys are already allowed.
 func Responses(raw jsontext.Value) (Request, error) {
-	object, err := wire.DecodeObject(bytes.TrimSpace(raw))
-	if err != nil {
+	data := bytes.TrimSpace(raw)
+	if err := wire.ValidateObject(data); err != nil {
 		return Request{}, chat.Invalid("body", "request body must be a JSON object")
 	}
-	return responses.ParseRequest(object)
+	return responses.ParseRequest(data)
 }
