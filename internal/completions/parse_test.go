@@ -747,6 +747,113 @@ func TestParseRequestRejects(t *testing.T) {
 	}
 }
 
+func TestParseControls(t *testing.T) {
+	cases := map[string]struct {
+		body  string
+		check func(t *testing.T, parsed parsedRequest)
+	}{
+		"maxCompletionTokens": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"max_completion_tokens":12}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.MaxOutputTokens)
+				assert.Equal(t, 12, *parsed.Request.Controls.MaxOutputTokens)
+			},
+		},
+		"toolWithoutWrapper": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tools":[{"function":{"name":"lookup"}}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Controls.Tools, 1)
+				assert.Equal(t, "lookup", parsed.Request.Controls.Tools[0].Name)
+			},
+		},
+		"strictTool": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","strict":true}}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Controls.Tools, 1)
+				require.NotNil(t, parsed.Request.Controls.Tools[0].Strict)
+				assert.True(t, *parsed.Request.Controls.Tools[0].Strict)
+			},
+		},
+		"streamOptionsWithoutUsage": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stream_options":{}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.False(t, parsed.IncludeUsage)
+			},
+		},
+		"nullControls": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"stop":null,"store":null,"stream":null}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Nil(t, parsed.Request.Controls.Stop)
+				require.NotNil(t, parsed.Store)
+				assert.False(t, *parsed.Store)
+				assert.False(t, parsed.Stream)
+			},
+		},
+		"jsonSchemaDefaults": {
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"result","schema":{"type":"object"}}}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, chat.FormatJSONSchema, parsed.Request.Output.Format.Kind)
+				assert.False(t, parsed.Request.Output.Format.Strict)
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := ParseRequest(decodeObject(t, tc.body))
+			require.NoError(t, err)
+			tc.check(t, parsed)
+		})
+	}
+}
+
+func TestParseControlErrors(t *testing.T) {
+	base := `"model":"gpt-4","messages":[{"role":"user","content":"x"}]`
+	cases := map[string]string{
+		"invalidMaxCompletionTokens":  `{` + base + `,"max_completion_tokens":"12"}`,
+		"negativeMaxCompletionTokens": `{` + base + `,"max_completion_tokens":0}`,
+		"invalidTopPRange":            `{` + base + `,"top_p":2}`,
+		"stopArrayValue":              `{` + base + `,"stop":["ok",1]}`,
+		"toolsNotArray":               `{` + base + `,"tools":{}}`,
+		"toolNotObject":               `{` + base + `,"tools":[1]}`,
+		"toolUnknownField":            `{` + base + `,"tools":[{"function":{"name":"f"},"extra":true}]}`,
+		"toolMissingFunction":         `{` + base + `,"tools":[{}]}`,
+		"toolFunctionNotObject":       `{` + base + `,"tools":[{"function":"f"}]}`,
+		"toolMissingName":             `{` + base + `,"tools":[{"function":{}}]}`,
+		"toolBadDescription":          `{` + base + `,"tools":[{"function":{"name":"f","description":1}}]}`,
+		"toolBadStrict":               `{` + base + `,"tools":[{"function":{"name":"f","strict":"yes"}}]}`,
+		"toolCallNotObject":           `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[1]}]}`,
+		"toolCallMissingFunction":     `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1"}]}]}`,
+		"toolCallFunctionNotObject":   `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":"f"}]}]}`,
+		"toolCallMissingName":         `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{}}]}]}`,
+		"toolCallMissingArguments":    `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"f"}}]}]}`,
+		"toolCallBadType":             `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":1,"function":{"name":"f","arguments":"{}"}}]}]}`,
+		"toolCallUnknownField":        `{"model":"gpt-4","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"f","arguments":"{}","extra":true}}]}]}`,
+		"toolChoiceFunctionField":     `{` + base + `,"tool_choice":{"type":"function","function":{"name":"f"},"name":"legacy"}}`,
+		"toolChoiceFunctionNotObject": `{` + base + `,"tool_choice":{"type":"function","function":"f"}}`,
+		"toolChoiceMissingType":       `{` + base + `,"tool_choice":{}}`,
+		"toolChoiceBadType":           `{` + base + `,"tool_choice":{"type":1,"name":"f"}}`,
+		"toolChoiceMissingName":       `{` + base + `,"tool_choice":{"type":"function"}}`,
+		"invalidModalitiesType":       `{` + base + `,"modalities":"text"}`,
+		"invalidModalityElement":      `{` + base + `,"modalities":[1]}`,
+		"audioNotObject":              `{` + base + `,"audio":"wav"}`,
+		"audioMissingFormat":          `{` + base + `,"audio":{"voice":"alloy"}}`,
+		"streamOptionsNotObject":      `{` + base + `,"stream_options":true}`,
+		"streamOptionsBadUsage":       `{` + base + `,"stream_options":{"include_usage":"yes"}}`,
+		"responseFormatNotObject":     `{` + base + `,"response_format":"json_object"}`,
+		"responseFormatMissingType":   `{` + base + `,"response_format":{}}`,
+		"schemaNotObject":             `{` + base + `,"response_format":{"type":"json_schema","json_schema":true}}`,
+		"schemaUnknownField":          `{` + base + `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{},"extra":true}}}`,
+		"schemaBadDescription":        `{` + base + `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{},"description":1}}}`,
+		"schemaBadStrict":             `{` + base + `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{},"strict":"yes"}}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest(decodeObject(t, body))
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestWireDelegates(t *testing.T) {
 	media, err := parseMediaURL("https://example.com/a.png", "auto")
 	require.NoError(t, err)

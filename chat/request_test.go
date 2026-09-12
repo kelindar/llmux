@@ -111,6 +111,16 @@ func TestOutputFormatValidate(t *testing.T) {
 	}
 }
 
+func TestOutputFormatKinds(t *testing.T) {
+	assert.False(t, (OutputFormat{Kind: FormatText}).IsStructured())
+	assert.True(t, (OutputFormat{Kind: FormatJSONObject}).IsStructured())
+	assert.True(t, (OutputFormat{Kind: FormatJSONSchema}).IsStructured())
+
+	require.NoError(t, (OutputFormat{Kind: FormatText}).Validate())
+	require.NoError(t, (OutputFormat{Kind: FormatJSONObject}).Validate())
+	require.Error(t, (OutputFormat{Kind: "xml"}).Validate())
+}
+
 func TestReasoningValidate(t *testing.T) {
 	assert.NoError(t, ReasoningControl{Effort: "high"}.Validate())
 	assert.NoError(t, ReasoningControl{Summary: true}.Validate())

@@ -813,7 +813,7 @@ func TestLifecycle(t *testing.T) {
 			t.Fatal("agent must not run")
 			return chat.Outcome{}, nil
 		}), chat.Info{Continuation: true}, WithStore(life))
-		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","store":true,"input":"x"}`, map[string]string{"Idempotency-Key": "neg"})
+		rec := postJSON(t, handler, "/responses", `{"model":"agent/basic","stream":true,"store":true,"input":"x"}`, map[string]string{"Idempotency-Key": "neg"})
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		assert.Equal(t, 1, life.finals)
 		life.mu.Lock()
@@ -835,6 +835,12 @@ func TestLifecycle(t *testing.T) {
 		assert.Empty(t, life.records)
 		assert.Empty(t, life.history)
 	})
+}
+
+func TestIsDelivery(t *testing.T) {
+	assert.True(t, IsDelivery(&chat.Error{Err: chat.ErrDelivery}))
+	assert.False(t, IsDelivery(errors.New("other")))
+	assert.False(t, IsDelivery(nil))
 }
 
 func jsonObject(t *testing.T, v any) map[string]any {

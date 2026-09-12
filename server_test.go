@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -795,6 +796,153 @@ func TestResolveItemOutput(t *testing.T) {
 	require.NoError(t, handler.resolveItemMedia(context.Background(), &item, &count))
 	require.NotNil(t, item.Output[0].Media)
 	assert.Equal(t, []byte{1}, item.Output[0].Media.Data)
+}
+
+type serverErrorReader struct{}
+
+func (serverErrorReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+func TestServerStateEdges(t *testing.T) {
+	t.Run("models list failure", func(t *testing.T) {
+		var logged error
+		handler := New(&fixedCatalog{listFn: func(context.Context) (map[string]chat.Info, error) {
+			return nil, errors.New("catalog unavailable")
+		}}, WithErrorLog(func(_ context.Context, err error) { logged = err }))
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/models", nil)
+		handler.serveModels(recorder, req)
+		require.Equal(t, http.StatusInternalServerError, recorder.Code)
+		require.Error(t, logged)
+	})
+
+	t.Run("body read paths", func(t *testing.T) {
+		handler := New(nil, WithLimits(chat.Limits{MaxRequestBytes: 8}))
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("ok"))
+		body, err := handler.readBody(httptest.NewRecorder(), req, 0)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("ok"), body)
+
+		req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader("too long"))
+		_, err = handler.readBody(httptest.NewRecorder(), req, 1)
+		apiErr, ok := errors.AsType[*chat.Error](err)
+		require.True(t, ok)
+		assert.Equal(t, "request_too_large", apiErr.Code)
+
+		req = httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Body = io.NopCloser(serverErrorReader{})
+		_, err = handler.readBody(httptest.NewRecorder(), req, 8)
+		apiErr, ok = errors.AsType[*chat.Error](err)
+		require.True(t, ok)
+		assert.Equal(t, "body_read_failed", apiErr.Code)
+	})
+
+	t.Run("preparation guards", func(t *testing.T) {
+		previous := "resp_1"
+		parsed := parsedRequest{
+			Request:  chat.Request{Target: "agent", Input: []chat.Item{chat.MessageItem(chat.RoleUser, chat.TextPart("hi"))}},
+			Previous: &previous,
+		}
+		handler := New(nil)
+		err := handler.prepareParsed(context.Background(), &parsed)
+		require.Error(t, err)
+		assert.NotNil(t, parsed.Turn)
+
+		err = handler.prepareExecution(context.Background(), &parsed, chat.Acceptance{})
+		require.Error(t, err)
+		assert.Equal(t, "unsupported", err.(*chat.Error).Code)
+
+		plain := parsedRequest{Request: chat.Request{Input: []chat.Item{chat.MessageItem(chat.RoleUser, chat.TextPart("hi"))}}}
+		require.NoError(t, handler.prepareExecution(context.Background(), &plain, chat.Acceptance{}))
+	})
+
+	t.Run("asset resolution limits and output", func(t *testing.T) {
+		handler := New(nil,
+			WithLimits(chat.Limits{MaxAssets: 1}),
+			WithAssetResolver(chat.AssetResolver(func(_ context.Context, media chat.Media, _ int64) (chat.Media, error) {
+				return media, nil
+			})),
+		)
+		item := chat.MessageItem(chat.RoleUser,
+			chat.ImagePart(chat.AssetMedia("image/png", "image-1")),
+			chat.FilePart(chat.AssetMedia("application/pdf", "file-1")),
+		)
+		count := 0
+		err := handler.resolveItemMedia(context.Background(), &item, &count)
+		require.Error(t, err)
+
+		handler = New(nil, WithAssetResolver(chat.AssetResolver(func(context.Context, chat.Media, int64) (chat.Media, error) {
+			return chat.Media{}, errors.New("output asset failed")
+		})))
+		output := chat.FunctionCallOutputItem("call_1", chat.FilePart(chat.AssetMedia("application/pdf", "file-1")))
+		count = 0
+		err = handler.resolveItemMedia(context.Background(), &output, &count)
+		require.Error(t, err)
+
+	})
+
+	t.Run("validation branches", func(t *testing.T) {
+		base := func() parsedRequest {
+			return parsedRequest{Request: chat.Request{Target: "agent", Output: chat.OutputSpec{Modalities: chat.ModalityText}}}
+		}
+		handler := New(nil)
+		previous := "resp_1"
+		parsed := base()
+		parsed.Previous = &previous
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Input = []chat.Item{chat.MessageItem(chat.RoleUser,
+			chat.ImagePart(chat.RemoteMedia("image/png", "https://example.com/a.png")),
+			chat.FilePart(chat.AssetMedia("application/pdf", "file-1")),
+		)}
+		handler = New(nil, WithLimits(chat.Limits{MaxAssets: 1}))
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{InputModalities: chat.ModalityImage | chat.ModalityFile, OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Input = []chat.Item{chat.MessageItem(chat.RoleUser, chat.FilePart(chat.InlineMedia("application/pdf", []byte{1})))}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Input = []chat.Item{chat.FunctionCallOutputItem("call_1", chat.FilePart(chat.InlineMedia("application/pdf", []byte{1})))}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{InputModalities: chat.ModalityText, OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Controls.Tools = []chat.FunctionTool{{}}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{Tools: true, OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Controls.ToolChoice = &chat.ToolChoice{Mode: "invalid"}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Controls.ToolChoice = &chat.ToolChoice{Mode: "required"}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Controls.Tools = []chat.FunctionTool{{Name: "declared"}}
+		parsed.Request.Controls.ToolChoice = &chat.ToolChoice{Mode: "function", Name: "missing"}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{Tools: true, OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Output.Format = chat.OutputFormat{Kind: chat.FormatJSONSchema}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{StructuredOutput: true, OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Controls.Reasoning = &chat.ReasoningControl{}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Controls.Audio = &chat.AudioControls{}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{OutputModalities: chat.ModalityText, GenerationControls: chat.ControlAudio}))
+
+		parsed = base()
+		parsed.Request.Controls.Audio = &chat.AudioControls{Voice: "alloy", Format: "wav"}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{OutputModalities: chat.ModalityText}))
+
+		parsed = base()
+		parsed.Request.Output.Format = chat.OutputFormat{Kind: chat.FormatJSONSchema, Name: "out", Schema: jsontext.Value(`bad`)}
+		require.Error(t, handler.validateParsed(&parsed, chat.Info{StructuredOutput: true, OutputModalities: chat.ModalityText}))
+	})
 }
 
 func TestReasoningSummaryGate(t *testing.T) {

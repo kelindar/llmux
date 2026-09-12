@@ -5,6 +5,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"sync"
 	"testing"
@@ -462,6 +463,132 @@ func TestFunctionCallItem(t *testing.T) {
 	item := chat.FunctionCallItem("call_1", "search", `{"q":"x"}`)
 	assert.Equal(t, chat.ItemFunctionCall, item.Type)
 	assert.Equal(t, "call_1", item.CallID)
+}
+
+func TestEventStateEdges(t *testing.T) {
+	t.Run("byte limits", func(t *testing.T) {
+		state := newEventState(chat.Limits{MaxOutputBytes: 8, MaxEventBytes: 4})
+		require.Error(t, state.addBytes(-1))
+		require.NoError(t, state.addBytes(2))
+		require.Error(t, state.addBytes(7))
+		require.Error(t, state.addBytes(5))
+	})
+
+	t.Run("item validation", func(t *testing.T) {
+		state := newEventState(chat.DefaultLimits())
+		_, err := state.apply(chat.OutputItem(chat.MessageItem(chat.Role("invalid"), chat.TextPart("x"))))
+		require.Error(t, err)
+
+		_, err = state.apply(chat.OutputItem(chat.MessageItem(chat.RoleUser, chat.TextPart("x"))))
+		require.Error(t, err)
+	})
+
+	t.Run("unchecked items", func(t *testing.T) {
+		state := newEventState(chat.DefaultLimits())
+		require.Error(t, state.addItemUnchecked(chat.Item{Type: chat.ItemExtension}))
+
+		item := chat.Item{ID: "item_1", Type: chat.ItemExtension, Data: jsontext.Value(`{"x":1}`)}
+		require.NoError(t, state.addItemUnchecked(item))
+		require.Error(t, state.addItemUnchecked(item))
+	})
+
+	t.Run("text initializes missing content", func(t *testing.T) {
+		state := newEventState(chat.DefaultLimits())
+		require.NoError(t, state.addItemUnchecked(chat.Item{
+			ID:     "msg_1",
+			Type:   chat.ItemMessage,
+			Status: chat.StatusInProgress,
+			Role:   chat.RoleAssistant,
+		}))
+
+		events, err := state.apply(chat.Event{Type: chat.EventTextDelta, ItemID: "msg_1", Delta: "hello"})
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "hello", state.items[0].Content[0].Text)
+
+		state.textOpen = "msg_1"
+		_, err = state.closeText("other")
+		require.Error(t, err)
+	})
+
+	t.Run("tool lifecycle errors", func(t *testing.T) {
+		state := newEventState(chat.DefaultLimits())
+		_, err := state.apply(chat.Event{Type: chat.EventToolCallStart, Name: "search"})
+		require.Error(t, err)
+		_, err = state.apply(chat.Event{Type: chat.EventToolCallStart, CallID: "call_1"})
+		require.Error(t, err)
+
+		require.NoError(t, func() error {
+			_, err := state.apply(chat.ToolStart("call_1", "search"))
+			return err
+		}())
+		_, err = state.apply(chat.ToolStart("call_1", "search"))
+		require.Error(t, err)
+		_, err = state.apply(chat.ToolDelta("missing", "{}"))
+		require.Error(t, err)
+		_, err = state.apply(chat.ToolDone("missing"))
+		require.Error(t, err)
+
+		limited := newEventState(chat.Limits{MaxOutputBytes: 1, MaxEventBytes: 1024, MaxMediaBytes: 1024})
+		_, err = limited.apply(chat.ToolStart("call_2", "search"))
+		require.NoError(t, err)
+		_, err = limited.apply(chat.ToolDelta("call_2", "{}"))
+		require.Error(t, err)
+	})
+
+	t.Run("item shapes", func(t *testing.T) {
+		state := newEventState(chat.DefaultLimits())
+		for _, content := range [][]chat.Part{
+			nil,
+			{chat.TextPart("one"), chat.TextPart("two")},
+			{{Type: chat.PartImage}},
+		} {
+			_, err := state.apply(chat.OutputItem(chat.Item{Type: chat.ItemMedia, Content: content}))
+			require.Error(t, err)
+		}
+
+		extension := chat.Item{Type: chat.ItemExtension, ID: "ext_1", Data: jsontext.Value(`{"x":1}`)}
+		events, err := state.apply(chat.OutputItem(extension))
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "ext_1", events[0].ItemID)
+
+		_, err = state.apply(chat.OutputItem(chat.Item{Type: chat.ItemType("unknown"), ID: "unknown"}))
+		require.Error(t, err)
+	})
+
+	t.Run("activity and finish", func(t *testing.T) {
+		state := newEventState(chat.DefaultLimits())
+		_, err := state.apply(chat.Activity("", jsontext.Value(`{}`)))
+		require.Error(t, err)
+		_, err = state.apply(chat.Activity("trace", jsontext.Value(`bad`)))
+		require.Error(t, err)
+		events, err := state.apply(chat.Activity("trace", jsontext.Value(`{"step":1}`)))
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+
+		limited := newEventState(chat.Limits{MaxOutputBytes: 2, MaxEventBytes: 1024, MaxMediaBytes: 1024})
+		_, err = limited.apply(chat.Activity("trace", jsontext.Value(`{"step":1}`)))
+		require.Error(t, err)
+
+		open := newEventState(chat.DefaultLimits())
+		_, err = open.apply(chat.ToolStart("call_3", "search"))
+		require.NoError(t, err)
+		_, err = open.finish()
+		require.Error(t, err)
+
+		valid := newEventState(chat.DefaultLimits())
+		_, err = valid.apply(chat.ToolStart("call_4", "search"))
+		require.NoError(t, err)
+		_, err = valid.apply(chat.ToolDelta("call_4", `{}`))
+		require.NoError(t, err)
+		events, err = valid.finish()
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		events, err = valid.finish()
+		require.NoError(t, err)
+		assert.Empty(t, events)
+	})
 }
 
 func TestClosure(t *testing.T) {

@@ -659,6 +659,120 @@ func TestParseRequestRejects(t *testing.T) {
 	}
 }
 
+func TestParseInputEdges(t *testing.T) {
+	cases := map[string]struct {
+		body  string
+		check func(t *testing.T, parsed parsedRequest)
+	}{
+		"nullInput": {
+			body: `{"model":"gpt-4.1","input":null}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Input, 1)
+				assert.Equal(t, "", parsed.Request.Input[0].Content[0].Text)
+			},
+		},
+		"textWithoutFormat": {
+			body: `{"model":"gpt-4.1","input":"x","text":{}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				assert.Equal(t, chat.FormatText, parsed.Request.Output.Format.Kind)
+			},
+		},
+		"detailedReasoning": {
+			body: `{"model":"gpt-4.1","input":"x","reasoning":{"effort":"high","summary":"detailed"}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Request.Controls.Reasoning)
+				assert.Equal(t, "high", parsed.Request.Controls.Reasoning.Effort)
+				assert.True(t, parsed.Request.Controls.Reasoning.Summary)
+			},
+		},
+		"defaultFunctionTool": {
+			body: `{"model":"gpt-4.1","input":"x","tools":[{"name":"search"}]}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.Len(t, parsed.Request.Controls.Tools, 1)
+				assert.Equal(t, "search", parsed.Request.Controls.Tools[0].Name)
+			},
+		},
+		"nullOptionalControls": {
+			body: `{"model":"gpt-4.1","input":"x","store":null,"parallel_tool_calls":null,"reasoning":{"summary":null}}`,
+			check: func(t *testing.T, parsed parsedRequest) {
+				require.NotNil(t, parsed.Store)
+				assert.False(t, *parsed.Store)
+				require.NotNil(t, parsed.Request.Controls.ParallelToolCall)
+				assert.False(t, *parsed.Request.Controls.ParallelToolCall)
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := ParseRequest(decodeObject(t, tc.body))
+			require.NoError(t, err)
+			tc.check(t, parsed)
+		})
+	}
+}
+
+func TestParseInputErrors(t *testing.T) {
+	base := `"model":"gpt-4.1"`
+	cases := map[string]string{
+		"inputNotStringOrArray":        `{` + base + `,"input":1}`,
+		"inputNotObject":               `{` + base + `,"input":[1]}`,
+		"messageUnknownField":          `{` + base + `,"input":[{"type":"message","role":"user","content":"x","extra":true}]}`,
+		"messageMissingRole":           `{` + base + `,"input":[{"type":"message","content":"x"}]}`,
+		"messageContentNotArray":       `{` + base + `,"input":[{"type":"message","role":"user","content":1}]}`,
+		"contentNotObject":             `{` + base + `,"input":[{"type":"message","role":"user","content":[1]}]}`,
+		"contentMissingType":           `{` + base + `,"input":[{"type":"message","role":"user","content":[{}]}]}`,
+		"contentUnknownField":          `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"x","extra":true}]}]}`,
+		"textMissing":                  `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_text"}]}]}`,
+		"imageMissingSource":           `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_image"}]}]}`,
+		"imageBothSources":             `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://x","file_id":"f"}]}]}`,
+		"imageBadDetail":               `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://x","detail":"bad"}]}]}`,
+		"imageBadURL":                  `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"ftp://x"}]}]}`,
+		"fileUnknownField":             `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_file","file_id":"f","extra":true}]}]}`,
+		"fileNoSource":                 `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_file"}]}]}`,
+		"fileMultipleSources":          `{` + base + `,"input":[{"type":"message","role":"user","content":[{"type":"input_file","file_id":"f","file_url":"https://x"}]}]}`,
+		"functionMissingCallID":        `{` + base + `,"input":[{"type":"function_call","name":"f","arguments":"{}"}]}`,
+		"functionMissingName":          `{` + base + `,"input":[{"type":"function_call","call_id":"c1","arguments":"{}"}]}`,
+		"functionMissingArguments":     `{` + base + `,"input":[{"type":"function_call","call_id":"c1","name":"f"}]}`,
+		"functionBadStatus":            `{` + base + `,"input":[{"type":"function_call","call_id":"c1","name":"f","arguments":"{}","status":"unknown"}]}`,
+		"functionOutputMissingCallID":  `{` + base + `,"input":[{"type":"function_call_output","output":"x"}]}`,
+		"functionOutputMissingOutput":  `{` + base + `,"input":[{"type":"function_call_output","call_id":"c1"}]}`,
+		"functionOutputBadOutput":      `{` + base + `,"input":[{"type":"function_call_output","call_id":"c1","output":1}]}`,
+		"reasoningSummaryNotArray":     `{` + base + `,"input":[{"type":"reasoning","summary":1}]}`,
+		"reasoningSummaryNotObject":    `{` + base + `,"input":[{"type":"reasoning","summary":[1]}]}`,
+		"reasoningSummaryUnknownField": `{` + base + `,"input":[{"type":"reasoning","summary":[{"type":"summary_text","text":"x","extra":true}]}]}`,
+		"reasoningSummaryMissingText":  `{` + base + `,"input":[{"type":"reasoning","summary":[{"type":"summary_text"}]}]}`,
+		"reasoningSummaryBadType":      `{` + base + `,"input":[{"type":"reasoning","summary":[{"type":"other","text":"x"}]}]}`,
+		"toolsNotArray":                `{` + base + `,"input":"x","tools":{}}`,
+		"toolNotObject":                `{` + base + `,"input":"x","tools":[1]}`,
+		"toolUnknownField":             `{` + base + `,"input":"x","tools":[{"name":"f","extra":true}]}`,
+		"toolMissingName":              `{` + base + `,"input":"x","tools":[{"parameters":{}}]}`,
+		"toolBadDescription":           `{` + base + `,"input":"x","tools":[{"name":"f","description":1}]}`,
+		"toolBadStrict":                `{` + base + `,"input":"x","tools":[{"name":"f","strict":"yes"}]}`,
+		"textNotObject":                `{` + base + `,"input":"x","text":1}`,
+		"textFormatNotObject":          `{` + base + `,"input":"x","text":{"format":1}}`,
+		"textFormatMissingType":        `{` + base + `,"input":"x","text":{"format":{}}}`,
+		"textFormatUnknownField":       `{` + base + `,"input":"x","text":{"format":{"type":"text","extra":true}}}`,
+		"textSchemaBadDescription":     `{` + base + `,"input":"x","text":{"format":{"type":"json_schema","name":"x","schema":{},"description":1}}}`,
+		"textSchemaBadStrict":          `{` + base + `,"input":"x","text":{"format":{"type":"json_schema","name":"x","schema":{},"strict":"yes"}}}`,
+		"reasoningNotObject":           `{` + base + `,"input":"x","reasoning":1}`,
+		"reasoningUnknownField":        `{` + base + `,"input":"x","reasoning":{"extra":true}}`,
+		"reasoningBadEffort":           `{` + base + `,"input":"x","reasoning":{"effort":1}}`,
+		"reasoningBadSummary":          `{` + base + `,"input":"x","reasoning":{"summary":1}}`,
+		"unsupportedIncludeField":      `{` + base + `,"input":"x","include":[]}`,
+		"unsupportedServiceTier":       `{` + base + `,"input":"x","service_tier":"auto"}`,
+		"unsupportedTruncation":        `{` + base + `,"input":"x","truncation":"disabled"}`,
+		"unsupportedUser":              `{` + base + `,"input":"x","user":"u"}`,
+		"unsupportedPrompt":            `{` + base + `,"input":"x","prompt":{}}`,
+		"unsupportedMaxToolCalls":      `{` + base + `,"input":"x","max_tool_calls":1}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest(decodeObject(t, body))
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestWireDelegates(t *testing.T) {
 	media, err := parseMediaURL("https://example.com/a.png", "high")
 	require.NoError(t, err)

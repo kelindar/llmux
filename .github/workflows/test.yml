@@ -13,6 +13,7 @@ permissions:
 env:
   GO111MODULE: "on"
   COVER_FAIL_UNDER: "75"
+  OVERALL_COVER_FAIL_UNDER: "90"
 
 jobs:
   test:
@@ -41,6 +42,28 @@ jobs:
           go test -race -count=1 -covermode=atomic -coverprofile=coverage/go ./...
           go -C ./fixtures test -race -count=1 ./...
           go -C ./bench test -count=1 ./...
+
+      - name: Enforce overall coverage
+        shell: bash
+        run: |
+          awk -v threshold="${OVERALL_COVER_FAIL_UNDER}" '
+            NR == 1 { next }
+            {
+              statements += $2
+              if ($3 > 0) covered += $2
+            }
+            END {
+              if (statements == 0) {
+                print "coverage profile has no statements"
+                exit 1
+              }
+              percent = 100 * covered / statements
+              printf "overall coverage: %.2f%% (%d/%d statements)\n", percent, covered, statements
+              if (percent + 1e-9 < threshold) {
+                printf "overall coverage %.2f%% is below %.2f%%\n", percent, threshold
+                exit 1
+              }
+            }' coverage/go
 
       - name: Upload coverage to Coveralls
         uses: shogo82148/actions-goveralls@v1

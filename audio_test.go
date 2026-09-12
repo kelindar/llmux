@@ -286,6 +286,174 @@ func TestSpeechErrors(t *testing.T) {
 	})
 }
 
+type audioErrorWriter struct {
+	header http.Header
+	code   int
+}
+
+func (w *audioErrorWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *audioErrorWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func (w *audioErrorWriter) WriteHeader(statusCode int) { w.code = statusCode }
+
+func (w *audioErrorWriter) Flush() {}
+
+type audioStreamErrorWriter struct {
+	header http.Header
+	code   int
+	failAt int
+	writes int
+}
+
+func (w *audioStreamErrorWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *audioStreamErrorWriter) Write(data []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("write failed")
+	}
+	return len(data), nil
+}
+
+func (w *audioStreamErrorWriter) WriteHeader(statusCode int) { w.code = statusCode }
+
+func (w *audioStreamErrorWriter) Flush() {}
+
+func TestAudioEdgeCases(t *testing.T) {
+	transcriber := audio.TranscriberFunc(func(_ context.Context, _ audio.TranscriptionRequest) (audio.Transcription, error) {
+		return audio.Transcription{Text: "ok"}, nil
+	})
+
+	t.Run("transcription guards", func(t *testing.T) {
+		handler := testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}), chat.Info{}, WithTranscriber(transcriber))
+		recorder := postTranscription(t, handler, nil)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.Equal(t, "model", responseError(t, recorder)["param"])
+
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		require.NoError(t, writer.WriteField("model", "whisper"))
+		require.NoError(t, writer.Close())
+		recorder = postRaw(t, handler, "/audio/transcriptions", body.Bytes(), writer.FormDataContentType(), nil)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.Equal(t, "file", responseError(t, recorder)["param"])
+
+		handler = testHandler(chat.AgentFunc(func(context.Context, *chat.Request, chat.Emit) (chat.Outcome, error) {
+			return chat.Outcome{}, nil
+		}), chat.Info{}, WithTranscriber(transcriber), WithLimits(chat.Limits{MaxMediaBytes: 1}))
+		recorder = postTranscription(t, handler, map[string]string{"model": "whisper"})
+		require.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code)
+		assert.Equal(t, "media_too_large", responseError(t, recorder)["code"])
+	})
+
+	t.Run("multipart validation", func(t *testing.T) {
+		require.Error(t, rejectMultipartFields(nil))
+
+		form := &multipart.Form{Value: map[string][]string{"model": {"a", "b"}}}
+		err := rejectMultipartFields(form)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "provided once")
+
+		form = &multipart.Form{Value: map[string][]string{"model": {"a"}}, File: map[string][]*multipart.FileHeader{"other": {{}}}}
+		err = rejectMultipartFields(form)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not supported")
+	})
+
+	t.Run("speech parser guards", func(t *testing.T) {
+		cases := []string{
+			`{`,
+			`{}`,
+			`{"model":1,"input":"x","voice":"alloy"}`,
+			`{"model":"m","voice":"alloy"}`,
+			`{"model":"m","input":"x","voice":" "}`,
+			`{"model":"m","input":"x","voice":1}`,
+			`{"model":"m","input":"x","voice":{"id":1}}`,
+			`{"model":"m","input":"x","voice":"alloy","instructions":1}`,
+			`{"model":"m","input":"x","voice":"alloy","response_format":1}`,
+			`{"model":"m","input":"x","voice":"alloy","speed":"fast"}`,
+			`{"model":"m","input":"x","voice":"alloy","stream_format":1}`,
+			`{"model":"m","input":"x","voice":"alloy","extra":true}`,
+		}
+		for _, body := range cases {
+			_, err := parseSpeechRequest([]byte(body))
+			require.Error(t, err, body)
+		}
+
+		request, err := parseSpeechRequest([]byte(`{"model":"m","input":"x","voice":"alloy","instructions":"say","response_format":"wav","speed":1.5,"stream_format":"SSE"}`))
+		require.NoError(t, err)
+		assert.Equal(t, "say", request.Instructions)
+		assert.Equal(t, "wav", request.ResponseFormat)
+		assert.Equal(t, 1.5, request.Speed)
+		assert.Equal(t, "sse", request.StreamFormat)
+	})
+
+	t.Run("speech delivery", func(t *testing.T) {
+		var logged error
+		handler := New(nil,
+			WithSpeaker(audio.SpeakerFunc(func(context.Context, audio.SpeechRequest) (audio.Speech, error) {
+				return audio.Speech{Data: []byte("audio")}, nil
+			})),
+			WithErrorLog(func(_ context.Context, err error) { logged = err }),
+		)
+		req := httptest.NewRequest(http.MethodPost, "/audio/speech", strings.NewReader(`{"model":"m","input":"x","voice":"alloy","response_format":"wav"}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.serveSpeech(&audioErrorWriter{}, req)
+		require.Error(t, logged)
+
+		streamRequest := httptest.NewRequest(http.MethodPost, "/audio/speech", strings.NewReader(`{"model":"m","input":"x","voice":"alloy","stream_format":"sse"}`))
+		streamRequest.Header.Set("Content-Type", "application/json")
+		handler.serveSpeech(&audioErrorWriter{}, streamRequest)
+		require.Error(t, logged)
+
+		streamHandler := New(nil,
+			WithSpeaker(audio.SpeakerFunc(func(context.Context, audio.SpeechRequest) (audio.Speech, error) {
+				return audio.Speech{Data: []byte(strings.Repeat("a", 3073))}, nil
+			})),
+			WithErrorLog(func(_ context.Context, err error) { logged = err }),
+		)
+		streamRequest = httptest.NewRequest(http.MethodPost, "/audio/speech", strings.NewReader(`{"model":"m","input":"x","voice":"alloy","stream_format":"sse"}`))
+		streamRequest.Header.Set("Content-Type", "application/json")
+		streamHandler.serveSpeech(&audioStreamErrorWriter{failAt: 2}, streamRequest)
+		require.Error(t, logged)
+
+		stream := &sseWriter{w: &audioErrorWriter{}, limits: chat.DefaultLimits()}
+		require.Error(t, writeSpeechStream(req, audio.Speech{Data: []byte("audio")}, stream))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		cancelledRequest := httptest.NewRequest(http.MethodPost, "/audio/speech", nil).WithContext(ctx)
+		recorder := httptest.NewRecorder()
+		err := writeSpeechStream(cancelledRequest, audio.Speech{Data: []byte("audio")}, &sseWriter{w: recorder, limits: chat.DefaultLimits()})
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("speech body read failure", func(t *testing.T) {
+		handler := New(nil, WithSpeaker(audio.SpeakerFunc(func(context.Context, audio.SpeechRequest) (audio.Speech, error) {
+			return audio.Speech{Data: []byte("audio")}, nil
+		})))
+		req := httptest.NewRequest(http.MethodPost, "/audio/speech", serverErrorReader{})
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.serveSpeech(recorder, req)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.Equal(t, "body_read_failed", responseError(t, recorder)["code"])
+	})
+}
+
 func postTranscription(t *testing.T, handler http.Handler, fields map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var body bytes.Buffer
