@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/buger/jsonparser"
 	chat "github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
@@ -23,6 +24,13 @@ func decodeObject(t *testing.T, raw string) []byte {
 	data := []byte(raw)
 	require.NoError(t, wire.ValidateObject(data))
 	return data
+}
+
+func decodeField(t *testing.T, raw string) field {
+	t.Helper()
+	value, typ, _, err := jsonparser.Get([]byte(raw))
+	require.NoError(t, err)
+	return field{Raw: value, Type: typ}
 }
 
 func requireAPIError(t *testing.T, err error, code, param string) {
@@ -546,6 +554,94 @@ func TestParseRequestExtra(t *testing.T) {
 			require.NoError(t, err)
 			if tc.check != nil {
 				tc.check(t, parsed)
+			}
+		})
+	}
+}
+
+func TestParseContentCoverage(t *testing.T) {
+	cases := map[string]struct {
+		raw     string
+		wantErr bool
+		check   func(t *testing.T, parts []chat.Part)
+	}{
+		"null": {raw: `null`},
+		"plainText": {
+			raw: `"hello"`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartText, parts[0].Type)
+			},
+		},
+		"wrongType":       {raw: `1`, wantErr: true},
+		"emptyArray":      {raw: `[]`},
+		"partWrongType":   {raw: `[1]`, wantErr: true},
+		"partMissingType": {raw: `[{}]`, wantErr: true},
+		"textPart": {
+			raw: `[{"type":"text","text":"hello"}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, "hello", parts[0].Text)
+			},
+		},
+		"textMissing":      {raw: `[{"type":"text"}]`, wantErr: true},
+		"textWrongType":    {raw: `[{"type":"text","text":1}]`, wantErr: true},
+		"textMixed":        {raw: `[{"type":"text","text":"x","file":{}}]`, wantErr: true},
+		"unknownPartField": {raw: `[{"type":"text","text":"x","extra":true}]`, wantErr: true},
+		"imageURL": {
+			raw: `[{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"high"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartImage, parts[0].Type)
+				assert.Equal(t, "high", parts[0].Detail)
+			},
+		},
+		"imageWrongObject": {raw: `[{"type":"image_url","image_url":"url"}]`, wantErr: true},
+		"imageMissingURL":  {raw: `[{"type":"image_url","image_url":{}}]`, wantErr: true},
+		"imageBadDetail":   {raw: `[{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"bad"}}]`, wantErr: true},
+		"imageBadURL":      {raw: `[{"type":"image_url","image_url":{"url":"ftp://example.com/a.png"}}]`, wantErr: true},
+		"audioMP3": {
+			raw: `[{"type":"input_audio","input_audio":{"data":"YQ==","format":"mp3"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartAudio, parts[0].Type)
+				assert.Equal(t, "mp3", parts[0].Media.Format)
+			},
+		},
+		"audioWrongObject":  {raw: `[{"type":"input_audio","input_audio":"audio"}]`, wantErr: true},
+		"audioUnknownField": {raw: `[{"type":"input_audio","input_audio":{"data":"YQ==","format":"wav","extra":true}}]`, wantErr: true},
+		"audioBadData":      {raw: `[{"type":"input_audio","input_audio":{"data":"!!!","format":"wav"}}]`, wantErr: true},
+		"audioBadFormat":    {raw: `[{"type":"input_audio","input_audio":{"data":"YQ==","format":"flac"}}]`, wantErr: true},
+		"fileURL": {
+			raw: `[{"type":"file","file":{"file_url":"https://example.com/a.txt","filename":"a.txt"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, chat.PartFile, parts[0].Type)
+				assert.Equal(t, "https://example.com/a.txt", parts[0].Media.URL)
+			},
+		},
+		"fileID": {
+			raw: `[{"type":"file","file":{"file_id":"file-1"}}]`,
+			check: func(t *testing.T, parts []chat.Part) {
+				require.Len(t, parts, 1)
+				assert.Equal(t, "file-1", parts[0].Media.Ref)
+			},
+		},
+		"fileMissingObject":   {raw: `[{"type":"file"}]`, wantErr: true},
+		"fileMultipleSources": {raw: `[{"type":"file","file":{"file_id":"file-1","file_url":"https://example.com/a"}}]`, wantErr: true},
+		"fileUnknownField":    {raw: `[{"type":"file","file":{"file_id":"file-1","extra":true}}]`, wantErr: true},
+		"unknownType":         {raw: `[{"type":"video"}]`, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			parts, err := parseChatContent(decodeField(t, tc.raw))
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tc.check != nil {
+				tc.check(t, parts)
 			}
 		})
 	}

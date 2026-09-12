@@ -50,6 +50,16 @@ func TestDirectScalarValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, flag)
 
+	value, typ = directTestValue(t, `false`)
+	flag, err = Bool(value, typ)
+	require.NoError(t, err)
+	assert.False(t, flag)
+
+	value, typ = directTestValue(t, `null`)
+	flag, err = Bool(value, typ)
+	require.NoError(t, err)
+	assert.False(t, flag)
+
 	value, typ = directTestValue(t, `3`)
 	count, err := Int(value, typ)
 	require.NoError(t, err)
@@ -64,14 +74,47 @@ func TestDirectScalarValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1.5, rate)
 
+	value, typ = directTestValue(t, `null`)
+	rate, err = Float(value, typ)
+	require.NoError(t, err)
+	assert.Zero(t, rate)
+
 	value, typ = directTestValue(t, `["a",null,"☃"]`)
 	values, err := Strings(value, typ)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "", "☃"}, values)
 
+	values, err = Strings([]byte(`null`), jsonparser.Null)
+	require.NoError(t, err)
+	assert.Nil(t, values)
+	_, err = Strings([]byte(`"nope"`), jsonparser.String)
+	assert.ErrorIs(t, err, ErrType)
+	_, err = Strings([]byte(`[1]`), jsonparser.Array)
+	assert.ErrorIs(t, err, ErrType)
+	_, err = Strings([]byte(`[}`), jsonparser.Array)
+	assert.Error(t, err)
+
 	value, typ = directTestValue(t, `"nope"`)
 	_, err = Bool(value, typ)
 	assert.Error(t, err)
+
+	_, err = String([]byte(`"\x"`), jsonparser.String)
+	assert.ErrorIs(t, err, ErrValue)
+	_, err = Bool([]byte(`truth`), jsonparser.Boolean)
+	assert.ErrorIs(t, err, ErrValue)
+	_, err = Int([]byte(`1e3`), jsonparser.Number)
+	assert.ErrorIs(t, err, ErrValue)
+	_, err = Float([]byte(`1e`), jsonparser.Number)
+	assert.ErrorIs(t, err, ErrValue)
+	_, err = Int(value, typ)
+	assert.ErrorIs(t, err, ErrType)
+	_, err = Float(value, typ)
+	assert.ErrorIs(t, err, ErrType)
+
+	value, typ = directTestValue(t, `null`)
+	count, err = Int(value, typ)
+	require.NoError(t, err)
+	assert.Zero(t, count)
 }
 
 func TestFileMediaValue(t *testing.T) {
@@ -80,6 +123,41 @@ func TestFileMediaValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "file-1", media.Ref)
 	assert.Equal(t, "a.txt", filename)
+
+	dataValue, dataType := directTestValue(t, `{"file_data":"YQ==","filename":"a.txt"}`)
+	media, filename, err = ParseFileMediaValue(Value{Raw: dataValue, Type: dataType}, "file")
+	require.NoError(t, err)
+	assert.Equal(t, []byte{'a'}, media.Data)
+	assert.Equal(t, "a.txt", filename)
+
+	urlValue, urlType := directTestValue(t, `{"file_url":"https://example.com/a.txt"}`)
+	media, filename, err = ParseFileMediaValue(Value{Raw: urlValue, Type: urlType}, "file")
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/a.txt", media.URL)
+	assert.Empty(t, filename)
+
+	source := []byte(`{"type":"file","file_id":"file-1"}`)
+	owned := Copy(source)
+	source[2] = 'X'
+	assert.Equal(t, `{"type":"file","file_id":"file-1"}`, string(owned))
+
+	cases := map[string]Value{
+		"wrongType":       {Raw: []byte(`[]`), Type: jsonparser.Array},
+		"unknownField":    {Raw: []byte(`{"file_id":"file-1","extra":true}`), Type: jsonparser.Object},
+		"malformed":       {Raw: []byte(`{"file_id":`), Type: jsonparser.Object},
+		"missingSource":   {Raw: []byte(`{"filename":"a.txt"}`), Type: jsonparser.Object},
+		"multipleSources": {Raw: []byte(`{"file_id":"file-1","file_url":"https://example.com/a"}`), Type: jsonparser.Object},
+		"invalidFilename": {Raw: []byte(`{"file_id":"file-1","filename":1}`), Type: jsonparser.Object},
+		"missingID":       {Raw: []byte(`{"file_id":""}`), Type: jsonparser.Object},
+		"invalidData":     {Raw: []byte(`{"file_data":"!!!"}`), Type: jsonparser.Object},
+		"invalidURL":      {Raw: []byte(`{"file_url":"ftp://example.com/a"}`), Type: jsonparser.Object},
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := ParseFileMediaValue(value, "file")
+			require.Error(t, err)
+		})
+	}
 }
 
 func directTestValue(t *testing.T, raw string) ([]byte, jsonparser.ValueType) {
