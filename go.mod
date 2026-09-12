@@ -3,6 +3,7 @@ module github.com/kelindar/llmux
 go 1.27.0
 
 require (
+	github.com/buger/jsonparser v1.1.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0-pre.2
 	github.com/rs/xid v1.6.0
 	github.com/stretchr/testify v1.11.1

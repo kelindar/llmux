@@ -5,8 +5,6 @@ package wire
 
 import (
 	"encoding/base64"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"errors"
 	"testing"
 
@@ -14,179 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
-	t.Helper()
-	object, err := DecodeObject([]byte(raw))
-	require.NoError(t, err)
-	return object
-}
-
-func TestDecodeObject(t *testing.T) {
-	cases := map[string]struct {
-		raw     string
-		wantErr string
-	}{
-		"ok":         {raw: `{"a":"b"}`},
-		"notJSON":    {raw: `{`, wantErr: "json"},
-		"notObject":  {raw: `[]`, wantErr: "json"},
-		"nullObject": {raw: `null`, wantErr: "JSON object"},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			object, err := DecodeObject([]byte(tc.raw))
-			if tc.wantErr == "" {
-				require.NoError(t, err)
-				assert.NotNil(t, object)
-				return
-			}
-			require.Error(t, err)
-		})
-	}
-}
-
-func TestDecodeString(t *testing.T) {
-	object := decodeObject(t, `{"name":"alice","age":1,"bad":true}`)
-
-	value, ok, err := DecodeString(object, "missing")
-	require.NoError(t, err)
-	assert.False(t, ok)
-	assert.Empty(t, value)
-
-	value, ok, err = DecodeString(object, "name")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, "alice", value)
-
-	_, _, err = DecodeString(object, "age")
-	require.Error(t, err)
-	var apiErr *chat.Error
-	require.True(t, errors.As(err, &apiErr))
-	assert.Equal(t, "age", apiErr.Param)
-}
-
-func TestDecodeBool(t *testing.T) {
-	object := decodeObject(t, `{"flag":true,"bad":"x"}`)
-
-	flag, err := DecodeBool(object, "missing")
-	require.NoError(t, err)
-	assert.Nil(t, flag)
-
-	flag, err = DecodeBool(object, "flag")
-	require.NoError(t, err)
-	require.NotNil(t, flag)
-	assert.True(t, *flag)
-
-	_, err = DecodeBool(object, "bad")
-	require.Error(t, err)
-}
-
-func TestDecodeInt(t *testing.T) {
-	object := decodeObject(t, `{"count":3,"bad":1.5}`)
-
-	count, err := DecodeInt(object, "missing")
-	require.NoError(t, err)
-	assert.Nil(t, count)
-
-	count, err = DecodeInt(object, "count")
-	require.NoError(t, err)
-	require.NotNil(t, count)
-	assert.Equal(t, 3, *count)
-
-	_, err = DecodeInt(object, "bad")
-	require.Error(t, err)
-}
-
-func TestDecodeFloat(t *testing.T) {
-	object := decodeObject(t, `{"rate":1.5,"bad":"x"}`)
-
-	rate, err := DecodeFloat(object, "missing")
-	require.NoError(t, err)
-	assert.Nil(t, rate)
-
-	rate, err = DecodeFloat(object, "rate")
-	require.NoError(t, err)
-	require.NotNil(t, rate)
-	assert.InDelta(t, 1.5, *rate, 0.001)
-
-	_, err = DecodeFloat(object, "bad")
-	require.Error(t, err)
-}
-
-func TestDecodeStringSlice(t *testing.T) {
-	object := decodeObject(t, `{"tags":["a","b"],"bad":"x"}`)
-
-	tags, err := DecodeStringSlice(object, "missing")
-	require.NoError(t, err)
-	assert.Nil(t, tags)
-
-	tags, err = DecodeStringSlice(object, "tags")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"a", "b"}, tags)
-
-	_, err = DecodeStringSlice(object, "bad")
-	require.Error(t, err)
-}
-
-func TestRejectUnknown(t *testing.T) {
-	object := decodeObject(t, `{"model":"m","x-custom":1,"vendor:ext":2}`)
-
-	err := RejectUnknown(object, map[string]bool{"model": true})
-	require.NoError(t, err)
-
-	object = decodeObject(t, `{"unknown":1}`)
-	err = RejectUnknown(object, map[string]bool{"model": true})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported")
-}
-
-func TestRejectUnknownStrict(t *testing.T) {
-	object := decodeObject(t, `{"model":"m"}`)
-	require.NoError(t, RejectUnknownStrict(object, map[string]bool{"model": true}))
-
-	object = decodeObject(t, `{"model":"m","extra":1}`)
-	err := RejectUnknownStrict(object, map[string]bool{"model": true})
-	require.Error(t, err)
-}
-
-func TestNamespacedExtensions(t *testing.T) {
-	object := decodeObject(t, `{"model":"m","x-a":1,"vendor:b":2,"plain":3}`)
-	ext := NamespacedExtensions(object, map[string]bool{"model": true})
-	assert.Len(t, ext, 2)
-	assert.NotNil(t, ext["x-a"])
-	assert.NotNil(t, ext["vendor:b"])
-	assert.Nil(t, ext["plain"])
-}
-
-func TestRawObjectArray(t *testing.T) {
-	obj, err := RawObject(jsontext.Value(`{"k":"v"}`), "param")
-	require.NoError(t, err)
-	assert.NotNil(t, obj["k"])
-
-	_, err = RawObject(jsontext.Value(`[]`), "param")
-	require.Error(t, err)
-
-	arr, err := RawArray(jsontext.Value(`[1,2]`), "param")
-	require.NoError(t, err)
-	assert.Len(t, arr, 2)
-
-	_, err = RawArray(jsontext.Value(`{}`), "param")
-	require.Error(t, err)
-}
-
-func TestRequireString(t *testing.T) {
-	object := decodeObject(t, `{"name":"bob","empty":"  "}`)
-
-	value, err := RequireString(object, "name")
-	require.NoError(t, err)
-	assert.Equal(t, "bob", value)
-
-	_, err = RequireString(object, "missing")
-	require.Error(t, err)
-
-	_, err = RequireString(object, "empty")
-	require.Error(t, err)
-}
 
 func TestErrorHelper(t *testing.T) {
 	cause := errors.New("cause")
@@ -252,33 +77,6 @@ func TestParseMediaURL(t *testing.T) {
 	}
 }
 
-func TestParseFileMedia(t *testing.T) {
-	data := base64.StdEncoding.EncodeToString([]byte("file-bytes"))
-	object := decodeObject(t, `{"file_data":"`+data+`","filename":"a.txt"}`)
-	media, filename, err := ParseFileMedia(object, "messages.content.file")
-	require.NoError(t, err)
-	assert.Equal(t, "a.txt", filename)
-	assert.Equal(t, []byte("file-bytes"), media.Data)
-
-	object = decodeObject(t, `{"file_url":"https://example.com/f.pdf"}`)
-	media, _, err = ParseFileMedia(object, "param")
-	require.NoError(t, err)
-	assert.Equal(t, "https://example.com/f.pdf", media.URL)
-
-	object = decodeObject(t, `{"file_id":"file-abc"}`)
-	media, _, err = ParseFileMedia(object, "param")
-	require.NoError(t, err)
-	assert.Equal(t, "file-abc", media.Ref)
-
-	object = decodeObject(t, `{"file_data":"`+data+`","file_id":"x"}`)
-	_, _, err = ParseFileMedia(object, "param")
-	require.Error(t, err)
-
-	object = decodeObject(t, `{"unknown":1}`)
-	_, _, err = ParseFileMedia(object, "param")
-	require.Error(t, err)
-}
-
 func TestParseFileData(t *testing.T) {
 	raw := base64.StdEncoding.EncodeToString([]byte("raw"))
 	media, err := ParseFileData(raw, "param")
@@ -291,59 +89,6 @@ func TestParseFileData(t *testing.T) {
 	assert.Equal(t, "application/pdf", media.MIMEType)
 
 	_, err = ParseFileData("!!!", "param")
-	require.Error(t, err)
-}
-
-func TestParseChatContent(t *testing.T) {
-	parts, err := ParseChatContent(nil)
-	require.NoError(t, err)
-	assert.Nil(t, parts)
-
-	parts, err = ParseChatContent(jsontext.Value("null"))
-	require.NoError(t, err)
-	assert.Nil(t, parts)
-
-	parts, err = ParseChatContent(jsontext.Value(`"hello"`))
-	require.NoError(t, err)
-	require.Len(t, parts, 1)
-	assert.Equal(t, chat.PartText, parts[0].Type)
-	assert.Equal(t, "hello", parts[0].Text)
-
-	imageB64 := base64.StdEncoding.EncodeToString([]byte{1})
-	content := `[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,` + imageB64 + `","detail":"low"}}]`
-	parts, err = ParseChatContent(jsontext.Value(content))
-	require.NoError(t, err)
-	require.Len(t, parts, 2)
-	assert.Equal(t, chat.PartImage, parts[1].Type)
-	assert.Equal(t, "low", parts[1].Detail)
-
-	audioB64 := base64.StdEncoding.EncodeToString([]byte{2})
-	audioContent := `[{"type":"input_audio","input_audio":{"data":"` + audioB64 + `","format":"wav"}}]`
-	parts, err = ParseChatContent(jsontext.Value(audioContent))
-	require.NoError(t, err)
-	require.Len(t, parts, 1)
-	assert.Equal(t, chat.PartAudio, parts[0].Type)
-	assert.Equal(t, "wav", parts[0].Media.Format)
-
-	fileData := base64.StdEncoding.EncodeToString([]byte("f"))
-	fileContent := `[{"type":"file","file":{"file_data":"` + fileData + `","filename":"note.txt"}}]`
-	parts, err = ParseChatContent(jsontext.Value(fileContent))
-	require.NoError(t, err)
-	require.Len(t, parts, 1)
-	assert.Equal(t, chat.PartFile, parts[0].Type)
-
-	_, err = ParseChatContent(jsontext.Value(`[{"type":"unknown"}]`))
-	require.Error(t, err)
-
-	_, err = ParseChatContent(jsontext.Value(`[{"type":"text"}]`))
-	require.Error(t, err)
-
-	badDetail := `[{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"ultra"}}]`
-	_, err = ParseChatContent(jsontext.Value(badDetail))
-	require.Error(t, err)
-
-	badAudio := `[{"type":"input_audio","input_audio":{"data":"` + audioB64 + `","format":"ogg"}}]`
-	_, err = ParseChatContent(jsontext.Value(badAudio))
 	require.Error(t, err)
 }
 
@@ -407,36 +152,4 @@ func TestMediaDataURL(t *testing.T) {
 
 	_, err = MediaDataURL(chat.InlineMedia("", []byte{1}))
 	require.Error(t, err)
-}
-
-func TestWireAliases(t *testing.T) {
-	part := chat.TextPart("x")
-	assert.Equal(t, chat.TextPart("x"), part)
-
-	media := chat.InlineMedia("image/png", []byte{1})
-	assert.Equal(t, chat.InlineMedia("image/png", []byte{1}), media)
-
-	err := chat.Invalid("p", "m")
-	require.NotNil(t, err)
-	assert.Equal(t, chat.Invalid("p", "m").Code, err.Code)
-
-	err = chat.Unsupported("p", "m")
-	require.NotNil(t, err)
-	assert.Equal(t, chat.Unsupported("p", "m").Code, err.Code)
-}
-
-func TestStringOrContent(t *testing.T) {
-	parts, err := ParseStringOrContent(jsontext.Value(`"plain"`), "param", func(jsontext.Value) ([]chat.Part, error) {
-		t.Fatal("parser should not run")
-		return nil, nil
-	})
-	require.NoError(t, err)
-	require.Len(t, parts, 1)
-
-	_, err = ParseStringOrContent(jsontext.Value(`[1]`), "param", func(raw jsontext.Value) ([]chat.Part, error) {
-		var values []jsontext.Value
-		require.NoError(t, json.Unmarshal(raw, &values))
-		return []chat.Part{chat.TextPart("from-array")}, nil
-	})
-	require.NoError(t, err)
 }

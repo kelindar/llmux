@@ -6,7 +6,6 @@ package llmux
 import (
 	"cmp"
 	"context"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -212,77 +211,6 @@ func (h *Handler) readBody(w http.ResponseWriter, r *http.Request, limit int64) 
 		return nil, &chat.Error{Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large", Message: "request body exceeds the configured limit"}
 	}
 	return data, nil
-}
-
-func decodeObject(data []byte) (map[string]jsontext.Value, error) {
-	var object map[string]jsontext.Value
-	if err := json.Unmarshal(data, &object); err != nil {
-		return nil, err
-	}
-	if object == nil {
-		return nil, errors.New("request body must be a JSON object")
-	}
-	return object, nil
-}
-
-func decodeString(object map[string]jsontext.Value, key string) (string, bool, error) {
-	raw, ok := object[key]
-	if !ok {
-		return "", false, nil
-	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", true, fmtError(key, "must be a string", err)
-	}
-	return value, true, nil
-}
-
-func decodeBool(object map[string]jsontext.Value, key string) (*bool, error) {
-	raw, ok := object[key]
-	if !ok {
-		return nil, nil
-	}
-	var value bool
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmtError(key, "must be a boolean", err)
-	}
-	return &value, nil
-}
-
-func decodeInt(object map[string]jsontext.Value, key string) (*int, error) {
-	raw, ok := object[key]
-	if !ok {
-		return nil, nil
-	}
-	var value int
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmtError(key, "must be an integer", err)
-	}
-	return &value, nil
-}
-
-func decodeFloat(object map[string]jsontext.Value, key string) (*float64, error) {
-	raw, ok := object[key]
-	if !ok {
-		return nil, nil
-	}
-	var value float64
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmtError(key, "must be a number", err)
-	}
-	return &value, nil
-}
-
-func decodeStringSlice(object map[string]jsontext.Value, key string) ([]string, error) {
-	raw, ok := object[key]
-	if !ok {
-		return nil, nil
-	}
-	var values []string
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return nil, fmtError(key, "must be an array of strings", err)
-	}
-	return values, nil
 }
 
 func fmtError(param, message string, err error) *chat.Error {

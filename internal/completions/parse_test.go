@@ -4,7 +4,6 @@
 package completions
 
 import (
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"net/http"
@@ -19,11 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
+func decodeObject(t *testing.T, raw string) []byte {
 	t.Helper()
-	object, err := wire.DecodeObject([]byte(raw))
-	require.NoError(t, err)
-	return object
+	data := []byte(raw)
+	require.NoError(t, wire.ValidateObject(data))
+	return data
 }
 
 func requireAPIError(t *testing.T, err error, code, param string) {
@@ -657,9 +656,7 @@ func TestWireDelegates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://example.com/a.png", media.URL)
 
-	fileObject, err := rawObject(jsontext.Value(`{"file_data":"YQ==","filename":"a.txt"}`), "file")
-	require.NoError(t, err)
-	fileMedia, name, err := parseFileMedia(fileObject, "file")
+	fileMedia, name, err := parseFileMedia([]byte(`{"file_data":"YQ==","filename":"a.txt"}`), "file")
 	require.NoError(t, err)
 	assert.Equal(t, "a.txt", name)
 	assert.NotEmpty(t, fileMedia.Data)
@@ -842,4 +839,42 @@ func TestAdapterStreamFail(t *testing.T) {
 		require.NoError(t, stream.Fail(chat.Invalid("model", "bad")))
 		assert.Contains(t, rec.Body.String(), `"param":"model"`)
 	})
+}
+
+func TestParseRawContract(t *testing.T) {
+	body := []byte(`{"model":"m\u006fdel","messages":[{"role":"user","content":"hello \u2603"}],"max_tokens":3,"metadata":{"k":"v"},"x-meta":{"n":1}}`)
+	parsed, err := ParseRequest(body)
+	require.NoError(t, err)
+	assert.Equal(t, "model", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	require.NotNil(t, parsed.Request.Controls.MaxOutputTokens)
+	assert.Equal(t, 3, *parsed.Request.Controls.MaxOutputTokens)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	for i := range body {
+		body[i] = 'x'
+	}
+	assert.Equal(t, "model", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	cases := map[string]struct {
+		body  string
+		param string
+	}{
+		"missing":         {`{"model":"m"}`, "messages"},
+		"null":            {`{"model":"m","messages":null}`, "messages"},
+		"wrongType":       {`{"model":"m","messages":[{"role":"user","content":"x"}],"max_tokens":1.0}`, "max_tokens"},
+		"duplicate":       {`{"model":"m","messages":[],"model":"m2"}`, "body"},
+		"trailing":        {`{"model":"m","messages":[]} {}`, "body"},
+		"malformedNested": {`{"model":"m","messages":[{"role":"user","content":[}`, "body"},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest([]byte(test.body))
+			requireAPIError(t, err, "invalid_request", test.param)
+		})
+	}
 }

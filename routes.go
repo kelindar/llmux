@@ -19,12 +19,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request) {
 		writeProtocolError(w, protocolChat, err)
 		return
 	}
-	object, err := decodeObject(body)
-	if err != nil {
-		writeProtocolError(w, protocolChat, fmtError("body", "request body must be valid JSON", err))
-		return
-	}
-	parsed, err := completions.ParseRequest(object)
+	parsed, err := completions.ParseRequest(body)
 	if err != nil {
 		writeProtocolError(w, protocolChat, err)
 		return
@@ -38,12 +33,7 @@ func (h *Handler) serveResponses(w http.ResponseWriter, r *http.Request) {
 		writeProtocolError(w, protocolResponses, err)
 		return
 	}
-	object, err := decodeObject(body)
-	if err != nil {
-		writeProtocolError(w, protocolResponses, fmtError("body", "request body must be valid JSON", err))
-		return
-	}
-	parsed, err := responses.ParseRequest(object)
+	parsed, err := responses.ParseRequest(body)
 	if err != nil {
 		writeProtocolError(w, protocolResponses, err)
 		return
@@ -61,12 +51,7 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request) {
 		writeProtocolError(w, protocolAnthropic, err)
 		return
 	}
-	object, err := decodeObject(body)
-	if err != nil {
-		writeProtocolError(w, protocolAnthropic, fmtError("body", "request body must be valid JSON", err))
-		return
-	}
-	parsed, err := anthropic.ParseRequest(object)
+	parsed, err := anthropic.ParseRequest(body)
 	if err != nil {
 		writeProtocolError(w, protocolAnthropic, err)
 		return

@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -19,9 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buger/jsonparser"
 	"github.com/kelindar/llmux/chat"
 	internalexecution "github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
+	internalwire "github.com/kelindar/llmux/internal/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -684,37 +685,42 @@ func TestOutputEvent(t *testing.T) {
 }
 
 func TestDecodeHelpers(t *testing.T) {
-	object := map[string]jsontext.Value{
-		"flag":  jsontext.Value(`true`),
-		"count": jsontext.Value(`3`),
-		"tags":  jsontext.Value(`["a","b"]`),
-		"ratio": jsontext.Value(`1.5`),
-	}
-	flag, err := decodeBool(object, "flag")
+	flagValue := serverTestValue(t, `true`)
+	flag, err := internalwire.Bool(flagValue.Raw, flagValue.Type)
 	require.NoError(t, err)
-	require.NotNil(t, flag)
-	assert.True(t, *flag)
+	assert.True(t, flag)
 
-	count, err := decodeInt(object, "count")
+	countValue := serverTestValue(t, `3`)
+	count, err := internalwire.Int(countValue.Raw, countValue.Type)
 	require.NoError(t, err)
-	require.NotNil(t, count)
-	assert.Equal(t, 3, *count)
+	assert.Equal(t, 3, count)
 
-	tags, err := decodeStringSlice(object, "tags")
+	tagsValue := serverTestValue(t, `["a","b"]`)
+	tags, err := internalwire.Strings(tagsValue.Raw, tagsValue.Type)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "b"}, tags)
 
-	ratio, err := decodeFloat(object, "ratio")
+	ratioValue := serverTestValue(t, `1.5`)
+	ratio, err := internalwire.Float(ratioValue.Raw, ratioValue.Type)
 	require.NoError(t, err)
-	require.NotNil(t, ratio)
+	assert.Equal(t, 1.5, ratio)
 
-	bad := map[string]jsontext.Value{"flag": jsontext.Value(`"nope"`), "count": jsontext.Value(`"nope"`), "tags": jsontext.Value(`1`)}
-	_, err = decodeBool(bad, "flag")
+	badFlag := serverTestValue(t, `"nope"`)
+	_, err = internalwire.Bool(badFlag.Raw, badFlag.Type)
 	require.Error(t, err)
-	_, err = decodeInt(bad, "count")
+	badCount := serverTestValue(t, `"nope"`)
+	_, err = internalwire.Int(badCount.Raw, badCount.Type)
 	require.Error(t, err)
-	_, err = decodeStringSlice(bad, "tags")
+	badTags := serverTestValue(t, `1`)
+	_, err = internalwire.Strings(badTags.Raw, badTags.Type)
 	require.Error(t, err)
+}
+
+func serverTestValue(t *testing.T, raw string) internalwire.Value {
+	t.Helper()
+	value, typ, _, err := jsonparser.Get([]byte(raw))
+	require.NoError(t, err)
+	return internalwire.Value{Raw: value, Type: typ}
 }
 
 func TestContinuationMissingStore(t *testing.T) {

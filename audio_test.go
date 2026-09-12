@@ -13,8 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buger/jsonparser"
 	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
+	internalwire "github.com/kelindar/llmux/internal/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,19 +42,26 @@ func TestValidSpeechFormat(t *testing.T) {
 }
 
 func TestParseSpeechVoice(t *testing.T) {
-	voice, err := parseSpeechVoice([]byte(`"alloy"`))
+	voice, err := parseSpeechVoice(speechTestValue(t, `"alloy"`))
 	require.NoError(t, err)
 	assert.Equal(t, "alloy", voice)
 
-	voice, err = parseSpeechVoice([]byte(`{"id":"custom-voice"}`))
+	voice, err = parseSpeechVoice(speechTestValue(t, `{"id":"custom-voice"}`))
 	require.NoError(t, err)
 	assert.Equal(t, "custom-voice", voice)
 
-	_, err = parseSpeechVoice([]byte(`{"name":"bad"}`))
+	_, err = parseSpeechVoice(speechTestValue(t, `{"name":"bad"}`))
 	require.Error(t, err)
 
-	_, err = parseSpeechVoice([]byte(`123`))
+	_, err = parseSpeechVoice(speechTestValue(t, `123`))
 	require.Error(t, err)
+}
+
+func speechTestValue(t *testing.T, raw string) internalwire.Value {
+	t.Helper()
+	value, typ, _, err := jsonparser.Get([]byte(raw))
+	require.NoError(t, err)
+	return internalwire.Value{Raw: value, Type: typ}
 }
 
 func TestSpeechNotConfigured(t *testing.T) {

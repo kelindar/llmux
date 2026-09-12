@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/buger/jsonparser"
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
@@ -20,11 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
+func decodeObject(t *testing.T, raw string) []byte {
 	t.Helper()
-	object, err := wire.DecodeObject([]byte(raw))
-	require.NoError(t, err)
-	return object
+	body := []byte(raw)
+	require.NoError(t, wire.ValidateObject(body))
+	return body
 }
 
 func requireAPIError(t *testing.T, err error, code, param string) {
@@ -662,9 +663,8 @@ func TestWireDelegates(t *testing.T) {
 	media, err := parseMediaURL("https://example.com/a.png", "high")
 	require.NoError(t, err)
 	assert.Equal(t, "https://example.com/a.png", media.URL)
-	fileObject, err := rawObject(jsontext.Value(`{"file_data":"YQ=="}`), "file")
-	require.NoError(t, err)
-	_, _, err = parseFileMedia(fileObject, "file")
+	fileObject := wire.Value{Raw: []byte(`{"file_data":"YQ=="}`), Type: jsonparser.Object}
+	_, _, err = wire.ParseFileMediaValue(fileObject, "file")
 	require.NoError(t, err)
 	assert.Equal(t, "x", collectText([]chat.Part{chat.TextPart("x")}))
 	parts := inputTextParts([]chat.Part{chat.TextPart("in")})
@@ -1177,3 +1177,41 @@ func (w *plainResponseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func (w *plainResponseWriter) WriteHeader(statusCode int) { w.code = statusCode }
+
+func TestParseRawContract(t *testing.T) {
+	body := []byte(`{"model":"gpt-\u0034.1","input":"hello \u2603","metadata":{"k":"v"},"x-meta":{"n":1}}`)
+	parsed, err := ParseRequest(body)
+	require.NoError(t, err)
+	assert.Equal(t, "gpt-4.1", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	for i := range body {
+		body[i] = 'x'
+	}
+	assert.Equal(t, "gpt-4.1", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	_, err = ParseRequest([]byte(`{"model":"gpt-4.1","input":null}`))
+	require.NoError(t, err)
+	cases := map[string]struct {
+		body  string
+		param string
+	}{
+		"missing":         {`{"model":"gpt-4.1"}`, "input"},
+		"nullModel":       {`{"model":null,"input":"x"}`, "model"},
+		"wrongType":       {`{"model":"gpt-4.1","input":"x","max_output_tokens":1.0}`, "max_output_tokens"},
+		"duplicate":       {`{"model":"gpt-4.1","input":"x","model":"other"}`, "body"},
+		"trailing":        {`{"model":"gpt-4.1","input":"x"} {}`, "body"},
+		"malformedNested": {`{"model":"gpt-4.1","input":[{"type":"message","content":[}`, "body"},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest([]byte(test.body))
+			requireAPIError(t, err, "invalid_request", test.param)
+		})
+	}
+}

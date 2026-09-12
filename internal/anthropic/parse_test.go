@@ -5,12 +5,12 @@ package anthropic
 
 import (
 	"encoding/base64"
-	"encoding/json/jsontext"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/buger/jsonparser"
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/execution"
 	internalprotocol "github.com/kelindar/llmux/internal/protocol"
@@ -19,11 +19,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func decodeObject(t *testing.T, raw string) map[string]jsontext.Value {
+func decodeObject(t *testing.T, raw string) []byte {
 	t.Helper()
-	object, err := wire.DecodeObject([]byte(raw))
-	require.NoError(t, err)
-	return object
+	body := []byte(raw)
+	require.NoError(t, wire.ValidateObject(body))
+	return body
 }
 
 func requireAPIError(t *testing.T, err error, code, param string) {
@@ -195,6 +195,44 @@ func TestParseRequest(t *testing.T) {
 			if tc.check != nil {
 				tc.check(t, parsed)
 			}
+		})
+	}
+}
+
+func TestParseRawContract(t *testing.T) {
+	body := []byte(`{"model":"claude-\u0033","max_tokens":3,"messages":[{"role":"user","content":"hello \u2603"}],"metadata":{"k":"v"},"x-meta":{"n":1}}`)
+	parsed, err := ParseRequest(body)
+	require.NoError(t, err)
+	assert.Equal(t, "claude-3", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	require.NotNil(t, parsed.Request.Controls.MaxOutputTokens)
+	assert.Equal(t, 3, *parsed.Request.Controls.MaxOutputTokens)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	for i := range body {
+		body[i] = 'x'
+	}
+	assert.Equal(t, "claude-3", parsed.Request.Target)
+	assert.Equal(t, "hello ☃", parsed.Request.Input[0].Content[0].Text)
+	assert.Equal(t, "v", parsed.Metadata["k"])
+	assert.Equal(t, `{"n":1}`, string(parsed.Request.Controls.Extensions["x-meta"]))
+
+	cases := map[string]struct {
+		body  string
+		param string
+	}{
+		"missing":         {`{"model":"claude-3","max_tokens":3}`, "messages"},
+		"nullModel":       {`{"model":null,"max_tokens":3,"messages":[{"role":"user","content":"x"}]}`, "model"},
+		"wrongType":       {`{"model":"claude-3","max_tokens":1.0,"messages":[{"role":"user","content":"x"}]}`, "max_tokens"},
+		"duplicate":       {`{"model":"claude-3","max_tokens":3,"messages":[],"model":"other"}`, "body"},
+		"trailing":        {`{"model":"claude-3","max_tokens":3,"messages":[]} {}`, "body"},
+		"malformedNested": {`{"model":"claude-3","max_tokens":3,"messages":[{"role":"user","content":[}`, "body"},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRequest([]byte(test.body))
+			requireAPIError(t, err, "invalid_request", test.param)
 		})
 	}
 }
@@ -556,7 +594,7 @@ func TestParseRequestRejects(t *testing.T) {
 
 func TestWireDelegates(t *testing.T) {
 	assert.True(t, validRole(chat.RoleUser))
-	_, err := decodeStringSlice(map[string]jsontext.Value{"stop_sequences": jsontext.Value(`["END"]`)}, "stop_sequences")
+	_, err := wire.Strings([]byte(`["END"]`), jsonparser.Array)
 	require.NoError(t, err)
 	assert.NotEmpty(t, newID())
 	_ = chat.AudioPart(chat.InlineMedia("audio/wav", []byte{1}))
