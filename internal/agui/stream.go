@@ -4,6 +4,7 @@
 package agui
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"net/http"
 	"strings"
@@ -59,12 +60,10 @@ func (s *stream) Started() bool { return s.w.Started() }
 func (s *stream) emit(value any) error { return s.w.Write("", value) }
 
 func (s *stream) threadID() string {
-	if s.meta != nil && s.meta.Response.Metadata != nil {
-		if id := s.meta.Response.Metadata["thread_id"]; id != "" {
-			return id
-		}
+	if s.meta == nil {
+		return s.parsed.Thread
 	}
-	return s.parsed.Thread
+	return cmp.Or(s.meta.Response.Metadata["thread_id"], s.parsed.Thread)
 }
 
 func (s *stream) start() error {
@@ -94,10 +93,7 @@ func (s *stream) Event(value chat.Event) error {
 	}
 	switch value.Type {
 	case chat.EventTextDelta:
-		id := value.ItemID
-		if id == "" {
-			id = s.openText
-		}
+		id := cmp.Or(value.ItemID, s.openText)
 		if id == "" {
 			return chat.Invalid("output.id", "text message ID is required")
 		}
@@ -113,10 +109,7 @@ func (s *stream) Event(value chat.Event) error {
 		s.openText = id
 		return s.textContent(id, value.Delta)
 	case chat.EventTextDone:
-		id := value.ItemID
-		if id == "" {
-			id = s.openText
-		}
+		id := cmp.Or(value.ItemID, s.openText)
 		if id == "" || !s.open[id] {
 			return chat.Invalid("output", "text message is not open")
 		}
@@ -130,10 +123,7 @@ func (s *stream) Event(value chat.Event) error {
 		}
 		return nil
 	case chat.EventActivity:
-		id := value.ItemID
-		if id == "" {
-			id = s.parsed.RunID
-		}
+		id := cmp.Or(value.ItemID, s.parsed.RunID)
 		return s.emit(event{Type: "ACTIVITY_SNAPSHOT", MessageID: id, ActivityType: value.Name, Content: jsontext.Value(value.Data)})
 	case chat.EventItem:
 		switch value.Item.Type {
@@ -209,16 +199,15 @@ func (s *stream) Complete(outcome chat.Outcome, items []chat.Item) error {
 		return err
 	}
 	status := outcome.Status
-	if s.meta != nil && s.meta.Response.Status != "" {
-		status = s.meta.Response.Status
+	if s.meta != nil {
+		status = cmp.Or(s.meta.Response.Status, status)
 	}
-	if status == "" {
-		status = chat.StatusCompleted
-	}
+	status = cmp.Or(status, chat.StatusCompleted)
 	for _, item := range items {
 		switch item.Type {
 		case chat.ItemMessage:
-			if status == chat.StatusCompleted || status == chat.StatusFailed || status == chat.StatusCancelled || status == chat.StatusIncomplete {
+			switch status {
+			case chat.StatusCompleted, chat.StatusFailed, chat.StatusCancelled, chat.StatusIncomplete:
 				if !s.emitted[item.ID] {
 					if err := s.message(item); err != nil {
 						return err
@@ -254,14 +243,8 @@ func (s *stream) terminalError(status chat.Status) (string, string) {
 	if s.meta != nil && s.meta.Response.Error != nil {
 		err := s.meta.Response.Error
 		message := err.Message
-		if message == "" {
-			message = "run failed"
-		}
 		code := err.Code
-		if code == "" {
-			code = string(status)
-		}
-		return message, code
+		return cmp.Or(message, "run failed"), cmp.Or(code, string(status))
 	}
 	if s.meta != nil && status == chat.StatusIncomplete && s.meta.Response.Incomplete != "" {
 		return s.meta.Response.Incomplete, string(status)

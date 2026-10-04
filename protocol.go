@@ -189,13 +189,12 @@ func (h *Handler) prepareTurn(ctx context.Context, idempotencyKey string, parsed
 	}
 	acceptance.Response = meta.Response
 
-	if acceptance.Replay != nil {
-		if parsed.Kind == protocolAGUI && acceptance.Replay.Status == chat.StatusInProgress {
-			return turnPrep{}, activeRun(*acceptance.Replay)
-		}
+	switch {
+	case parsed.Kind == protocolAGUI && acceptance.Replay != nil && acceptance.Replay.Status == chat.StatusInProgress:
+		return turnPrep{}, activeRun(*acceptance.Replay)
+	case acceptance.Replay != nil:
 		return turnPrep{info: info, acceptance: acceptance, meta: meta, replay: acceptance.Replay}, nil
-	}
-	if parsed.Kind == protocolAGUI && acceptance.Finish == nil {
+	case parsed.Kind == protocolAGUI && acceptance.Finish == nil:
 		return turnPrep{}, chat.Unsupported("store", "AG-UI acceptance requires a persistence Finish callback")
 	}
 

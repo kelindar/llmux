@@ -140,15 +140,146 @@ See [`examples/mcp`](examples/mcp).
 
 ## AG-UI
 
-`WithAGUI()` enables a stored-turn HTTP/SSE profile tested with
-`@ag-ui/client` and `@ag-ui/core` 1.0.1. Each request sends one new user message
-or one declared UI action. The application owns authorization, thread
-resolution, deduplication, catalog validation, and persistence through the
-existing Store and Agent contracts. Complete rich items are delivered after
-`Finish` succeeds.
+AG-UI connects agents to interactive clients over HTTP/SSE. Enable the exact
+`POST /ag-ui` route with a Store:
 
-See the [profile contract](docs/agui.md) and the runnable
-[form/action example](examples/agui).
+```go
+llmux.New(catalog, llmux.WithAGUI(), llmux.WithStore(store))
+```
+
+The route is disabled by default. This stored-turn profile supports one new
+user message or one UI action per request, and is tested with the official
+`@ag-ui/client` and `@ag-ui/core` **1.0.1** SDKs. Authentication remains in your
+middleware; Store and Agent implementations own application behavior.
+
+### Sending a turn
+
+```json
+{
+  "threadId": "client-creation-correlation",
+  "runId": "request-identity",
+  "messages": [{"id":"message-1","role":"user","content":"Make a form"}],
+  "tools": [],
+  "context": [],
+  "state": {},
+  "forwardedProps": {
+    "llmux": {
+      "target": "agent/example",
+      "ui": {"format":"a2ui","version":"0.9.1","catalogId":"example/v1"}
+    }
+  }
+}
+```
+
+`threadId`, `runId`, and target are required. `threadId` becomes
+`TurnRequest.Thread`; the Store authorizes it and resolves initial creation
+correlations. Return the canonical thread in
+`Acceptance.Response.Metadata["thread_id"]`, which clients use on later turns.
+Unknown existing threads must not create replacements. `runId` becomes
+`TurnRequest.IdempotencyKey`; an HTTP `Idempotency-Key` header, if supplied,
+must agree. Add `forwardedProps.llmux.previousResponseId` for an exact parent.
+
+Text accepts a string or typed `{type:"text",text}` parts. Images use AG-UI's
+`source` union for inline base64 data, URLs, or application file references,
+then follow existing modality, size, and authorized asset-resolution checks.
+The decoder does not fetch URLs or accept provider-specific file handles.
+
+Clients must trim SDK display history before sending. Histories, privileged
+messages, nonempty tools/context/state, nested runs, and interrupt/resume
+options are rejected before Store acceptance. Empty SDK defaults are allowed.
+
+### Submitting a UI action
+
+Send `messages: []`, the exact `previousResponseId`, and this action inside
+`forwardedProps.llmux`:
+
+```json
+{
+  "action": {
+    "name": "submit",
+    "surfaceId": "form",
+    "sourceComponentId": "submit",
+    "context": {"name":"Alice","channel":"email"},
+    "sourceResponseId": "response-1",
+    "sourceItemId": "item-1"
+  }
+}
+```
+
+The adapter creates one `ItemExtension` whose Data has `kind:"ui_action"` and
+the same fields. `sourceResponseId` must equal the exact parent. Store.Accept
+must authorize the stored source widget, validate fields and choices against
+its declared action, and reject stale or concurrent submissions. Deduplicate
+request identities under the acceptance lock before checking stale parents;
+changed requests with a reused identity must conflict. Actions are ordinary
+new turns. Approval decisions remain application-owned operations.
+
+### Returning complete UI
+
+Declare `Info.Continuation=true`. UI-enabled agents also declare
+`Info.Extensions["x-ui"]=true`; client catalog support arrives in
+`Request.Controls.Extensions["x-ui"]`. Other adapters reject these agents
+before execution. Text-only agents can use AG-UI without UI catalog support.
+
+Emit an `ItemExtension` with this Data shape:
+
+```json
+{
+  "kind": "ui",
+  "format": "a2ui",
+  "version": "0.9.1",
+  "catalogId": "example/v1",
+  "payload": [
+    {"version":"v0.9.1","createSurface":{"surfaceId":"form","catalogId":"example/v1"}},
+    {"version":"v0.9.1","updateComponents":{"surfaceId":"form","components":[{"id":"root","component":"Text","text":"Hello"}]}},
+    {"version":"v0.9.1","updateDataModel":{"surfaceId":"form","value":{}}}
+  ]
+}
+```
+
+Each item carries one complete A2UI 0.9.1 surface, including components and a
+data model. Cross-turn patches, surface deletion, and client data-model
+synchronization are outside this profile. llmux checks transport shape and
+the requested catalog before retention. Applications validate component
+schemas, roots, references, bindings, cycles, count/depth, and declared
+actions before emission. Catalog schemas remain source-managed application
+artifacts. UI is bounded to 256 KiB per item; actions to 64 KiB, in addition
+to configured request, output, and event limits.
+
+### Persistence and events
+
+Every new acceptance must supply `Finish`. Rich items publish only after it
+successfully persists the finalized response. `Acceptance.Agent` may own
+effective stored history; otherwise the ordinary Store.Load merge applies.
+Returning terminal `Replay` skips Agent.Run and Finish, preserving saved item
+IDs. Active Replay returns HTTP 409 `run_in_progress` with the response ID and
+authorized metadata. Store errors may supply the same references through
+`chat.Error.Metadata`; other protocols omit that field.
+
+| Event | Meaning |
+| --- | --- |
+| `RUN_STARTED` | Request run ID and authoritative thread ID |
+| `TEXT_MESSAGE_START` / `TEXT_MESSAGE_CONTENT` / `TEXT_MESSAGE_END` | Normalized assistant text with stable item IDs |
+| `ACTIVITY_SNAPSHOT` | Authorized activity, enabled by `Acceptance.Activity`; sanitize content in the application |
+| `CUSTOM`, name `llmux.item` | Persisted UI value `{id,format,version,catalogId,payload}` |
+| `RUN_FINISHED` | Completed work, with `result:{responseId,metadata}` |
+| `RUN_ERROR` | Failed, cancelled, or incomplete work, including persistence errors |
+
+Clients replace a repeated rich item by ID and enable its controls only after
+successful `RUN_FINISHED`. Invalid UI never enters saved partial output.
+There is no `[DONE]` marker. Positive `Acceptance.RunTimeout` allows bounded
+execution to continue after delivery disconnects. Pending approvals remain
+pending, and explicit Stop stays application-owned. Metadata and retrieval
+endpoints expose only application-authorized references; IDs do not grant
+access.
+
+The [form/action example](examples/agui) includes a small catalog, a Store,
+and an official-client proof covering replay, source validation, stale actions,
+and subsequent turns. Run `npm ci` and `npm test` there. Measure transport
+cost with `go -C bench test -run '^$' -bench '^BenchmarkTransport$' -benchmem`.
+See the [AG-UI 1.0 specification](https://docs.ag-ui.com/spec/1.0/index.md) and
+[A2UI 0.9.1 protocol](https://github.com/a2ui-project/a2ui/blob/main/specification/v0_9_1/docs/a2ui_protocol.md)
+for their full protocols.
 
 ## Media and audio
 

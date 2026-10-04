@@ -6,8 +6,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,8 +24,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"embed"
 
 	"github.com/kelindar/llmux"
 	"github.com/kelindar/llmux/chat"
@@ -83,10 +83,7 @@ func main() {
 		w.WriteHeader(http.StatusAccepted)
 		go func() { _ = server.Shutdown(context.Background()) }()
 	})
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	port := cmp.Or(os.Getenv("PORT"), "8080")
 	server = &http.Server{
 		Addr:              net.JoinHostPort("127.0.0.1", port),
 		Handler:           control,
@@ -195,10 +192,10 @@ func (a *contactAgent) Run(ctx context.Context, req *chat.Request, emit chat.Emi
 		current = req.Input[len(req.Input)-1:]
 	}
 	selected, err := actionFrom(current)
-	if err != nil {
+	switch {
+	case err != nil:
 		return chat.Outcome{}, err
-	}
-	if selected == nil {
+	case selected == nil:
 		if err := emit.Text("Fill in the contact request and submit it."); err != nil {
 			return chat.Outcome{}, err
 		}
@@ -311,10 +308,10 @@ func (s *memoryStore) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Ac
 	if !turn.Retain {
 		return chat.Acceptance{}, chat.Unsupported("store", "the example requires stored turns")
 	}
-	if _, ok := turn.Request.Controls.Extensions["x-ui"]; !ok {
+	switch _, hasUI := turn.Request.Controls.Extensions["x-ui"]; {
+	case !hasUI:
 		return chat.Acceptance{}, chat.Unsupported("forwardedProps", "the example requires the x-ui extension")
-	}
-	if strings.TrimSpace(turn.Thread) == "" {
+	case strings.TrimSpace(turn.Thread) == "":
 		return chat.Acceptance{}, chat.Invalid("threadId", "threadId is required")
 	}
 	fingerprint, err := turnFingerprint(turn)
@@ -352,16 +349,13 @@ func (s *memoryStore) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Ac
 		}
 	}
 
-	threadID := s.correlations[turn.Thread]
-	if threadID == "" {
-		threadID = turn.Thread
-	}
+	threadID := cmp.Or(s.correlations[turn.Thread], turn.Thread)
 	threadState := s.threads[threadID]
 	if threadState == nil {
-		if turn.Previous != nil {
+		switch {
+		case turn.Previous != nil:
 			return chat.Acceptance{}, conflict("stale_parent", "previous response does not belong to this thread")
-		}
-		if strings.HasPrefix(turn.Thread, "thread_") {
+		case strings.HasPrefix(turn.Thread, "thread_"):
 			return chat.Acceptance{}, conflict("stale_parent", "threadId is not a known conversation")
 		}
 		s.threadSeq++
@@ -380,18 +374,18 @@ func (s *memoryStore) Accept(_ context.Context, turn *chat.TurnRequest) (chat.Ac
 	}
 
 	selected, err := actionFrom(turn.Turn)
-	if err != nil {
+	switch {
+	case err != nil:
 		return chat.Acceptance{}, chat.Invalid("action", err.Error())
-	}
-	if selected != nil {
+	case selected != nil:
 		if turn.Previous == nil || selected.SourceResponseID != threadState.latest || selected.SourceResponseID != *turn.Previous {
 			return chat.Acceptance{}, conflict("stale_parent", "UI action must reference the latest successful response")
 		}
 		record := s.records[selected.SourceResponseID]
-		if !storedAction(record.response, *selected) {
+		switch {
+		case !storedAction(record.response, *selected):
 			return chat.Acceptance{}, chat.Invalid("action", "UI action is not present on its stored source widget")
-		}
-		if strings.TrimSpace(selected.Context["name"]) == "" || strings.TrimSpace(selected.Context["email"]) == "" {
+		case strings.TrimSpace(selected.Context["name"]) == "" || strings.TrimSpace(selected.Context["email"]) == "":
 			return chat.Acceptance{}, chat.Invalid("action", "name and email are required")
 		}
 	}

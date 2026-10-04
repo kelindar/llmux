@@ -4,6 +4,7 @@
 package llmux
 
 import (
+	"cmp"
 	"context"
 	"maps"
 	"net/http"
@@ -72,8 +73,5 @@ func (a uiAgent) Run(ctx context.Context, req *chat.Request, emit chat.Emit) (ch
 	})
 	mu.Lock()
 	defer mu.Unlock()
-	if err == nil {
-		err = invalid
-	}
-	return outcome, err
+	return outcome, cmp.Or(err, invalid)
 }
