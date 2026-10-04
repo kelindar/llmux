@@ -27,12 +27,16 @@ const (
 	Responses
 	// Anthropic is the Anthropic Messages wire protocol.
 	Anthropic
+	// AGUI is the stored-turn AG-UI HTTP/SSE profile.
+	AGUI
 )
 
 // ParsedRequest is the protocol-neutral request produced by a wire decoder.
 // Request holds agent execution fields. Turn, Previous, Store, Metadata, and
 // Retain are acceptance/persistence concerns filled by parsers and the handler.
 type ParsedRequest struct {
+	Thread       string            // submitted conversation ID or creation correlation
+	RunID        string            // AG-UI request identity
 	Kind         Kind              // wire protocol that parsed the request
 	Request      chat.Request      // canonical execution request for Agent.Run
 	Turn         []chat.Item       // items submitted in this HTTP request only
@@ -170,6 +174,9 @@ func WriteError(w http.ResponseWriter, kind Kind, err error) {
 		}
 		if apiErr.Param != "" {
 			body["error"].(map[string]any)["param"] = apiErr.Param
+		}
+		if kind == AGUI && len(apiErr.Metadata) != 0 {
+			body["error"].(map[string]any)["metadata"] = apiErr.Metadata
 		}
 		WriteJSON(w, apiErr.Status, body)
 	}

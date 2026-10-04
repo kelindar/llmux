@@ -105,6 +105,7 @@ func (r Response) Clone() Response {
 	if r.Error != nil {
 		e := *r.Error
 		e.Err = nil
+		e.Metadata = maps.Clone(e.Metadata)
 		out.Error = &e
 	}
 	out.Metadata = cloneMetadata(r.Metadata)
@@ -125,12 +126,15 @@ func cloneMetadata(src map[string]string) map[string]string {
 
 // Error is a sanitized protocol error that an application may return from a resolver or agent.
 type Error struct {
-	Status  int
-	Type    string
-	Code    string
-	Param   string
-	Message string
-	Err     error
+	// Metadata carries application-authorized references. Treat it as read-only
+	// after returning the error. Protocols may omit it.
+	Metadata map[string]string
+	Status   int
+	Type     string
+	Code     string
+	Param    string
+	Message  string
+	Err      error
 }
 
 // Error returns Message, the wrapped error text, or a default API error string.

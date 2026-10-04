@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/llmux/agui/catalog/v1",
+  "title": "llmux contact example catalog",
+  "description": "The small A2UI catalog used by examples/agui.",
+  "catalogId": "https://example.invalid/llmux/agui/catalog/v1",
+  "components": {
+    "Text": {
+      "allOf": [
+        { "$ref": "#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "Text" },
+            "text": { "$ref": "#/$defs/DynamicString" },
+            "variant": { "enum": ["h1", "h2", "body", "caption"] }
+          },
+          "required": ["component", "text"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Column": {
+      "allOf": [
+        { "$ref": "#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "Column" },
+            "children": { "$ref": "common_types.json#/$defs/ChildList" },
+            "align": { "enum": ["start", "center", "end", "stretch"] }
+          },
+          "required": ["component", "children"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Card": {
+      "allOf": [
+        { "$ref": "#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "Card" },
+            "child": { "$ref": "common_types.json#/$defs/ComponentId" }
+          },
+          "required": ["component", "child"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "TextField": {
+      "allOf": [
+        { "$ref": "#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "TextField" },
+            "label": { "$ref": "#/$defs/DynamicString" },
+            "value": { "$ref": "#/$defs/DynamicString" },
+            "variant": { "enum": ["shortText", "longText"] }
+          },
+          "required": ["component", "label", "value"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Button": {
+      "allOf": [
+        { "$ref": "#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "Button" },
+            "child": { "$ref": "common_types.json#/$defs/ComponentId" },
+            "variant": { "enum": ["default", "primary", "borderless"] },
+            "action": { "$ref": "#/$defs/Action" }
+          },
+          "required": ["component", "child", "action"]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  },
+  "$defs": {
+    "ComponentCommon": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common_types.json#/$defs/ComponentId" },
+        "component": { "type": "string" }
+      },
+      "required": ["id", "component"]
+    },
+    "DataBinding": {
+      "type": "object",
+      "properties": { "path": { "type": "string" } },
+      "required": ["path"],
+      "additionalProperties": false
+    },
+    "DynamicString": {
+      "oneOf": [
+        { "type": "string" },
+        { "$ref": "#/$defs/DataBinding" }
+      ]
+    },
+    "Action": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "context": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/DynamicString" }
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["event"],
+      "additionalProperties": false
+    },
+    "anyComponent": {
+      "oneOf": [
+        { "$ref": "#/components/Text" },
+        { "$ref": "#/components/Column" },
+        { "$ref": "#/components/Card" },
+        { "$ref": "#/components/TextField" },
+        { "$ref": "#/components/Button" }
+      ],
+      "discriminator": { "propertyName": "component" }
+    }
+  }
+}

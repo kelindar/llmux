@@ -92,7 +92,7 @@ func TestResponseClone(t *testing.T) {
 		Previous: &prev,
 		Output:   []Item{MessageItem(RoleAssistant, TextPart("hi"))},
 		Usage:    &Usage{Input: 1, Output: 2},
-		Error:    &Error{Status: 500, Message: "failed", Err: errors.New("operational")},
+		Error:    &Error{Status: 500, Message: "failed", Err: errors.New("operational"), Metadata: map[string]string{"response_id": "original"}},
 	}
 	cloned := orig.Clone()
 	cloned.Metadata["k"] = "changed"
@@ -106,6 +106,8 @@ func TestResponseClone(t *testing.T) {
 	require.NotNil(t, cloned.Error)
 	assert.Equal(t, "failed", cloned.Error.Message)
 	assert.Nil(t, cloned.Error.Err)
+	cloned.Error.Metadata["response_id"] = "changed"
+	assert.Equal(t, "original", orig.Error.Metadata["response_id"])
 
 	empty := Response{Metadata: map[string]string{}}.Clone()
 	assert.Nil(t, empty.Metadata)

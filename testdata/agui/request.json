@@ -1,0 +1,1 @@
+{"threadId":"creation-1","runId":"run-1","messages":[{"id":"msg-1","role":"user","content":"hello"}],"forwardedProps":{"llmux":{"target":"agent/basic","ui":{"format":"a2ui","version":"0.9.1","catalogId":"example/v1"}}}}

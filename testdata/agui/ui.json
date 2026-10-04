@@ -1,0 +1,1 @@
+{"kind":"ui","format":"a2ui","version":"0.9.1","catalogId":"example/v1","payload":[{"version":"v0.9.1","createSurface":{"surfaceId":"form","catalogId":"example/v1"}},{"version":"v0.9.1","updateComponents":{"surfaceId":"form","components":[{"id":"root","component":"Text","text":"Hello"}]}},{"version":"v0.9.1","updateDataModel":{"surfaceId":"form","value":{}}}]}

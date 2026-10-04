@@ -19,13 +19,16 @@ import (
 // implementations may type-assert it to reuse load-time binding. Nil when no
 // catalog is configured or Load was not performed for this turn.
 type TurnRequest struct {
+	// Thread is a submitted conversation ID or initial creation correlation.
+	// Applications authorize it; it never grants access.
+	Thread         string
 	Request        *Request          // Execution request; treat as read-only.
 	Turn           []Item            // Items submitted in this request only.
 	Previous       *string           // Prior response ID for continuation.
 	Metadata       map[string]string // Application metadata for the response.
 	Store          *bool             // Wire store flag; nil when omitted.
 	Retain         bool              // Effective retention after StoreDefault.
-	IdempotencyKey string            // Idempotency-Key header value, if any.
+	IdempotencyKey string            // Protocol request identity: header value or AG-UI runId.
 	Stream         bool              // Whether the client requested streaming.
 	CatalogAgent   Agent             // Agent from Catalog.Load for this target.
 }
@@ -56,7 +59,7 @@ type Acceptance struct {
 	//   <0 — invalid; the handler rejects and calls Finish when set so
 	//        reserved resources cannot leak.
 	RunTimeout time.Duration
-	Activity   bool // When true, Responses may emit EventActivity.
+	Activity   bool // When true, Responses and AG-UI may emit EventActivity.
 
 	// Finish is called exactly once after Agent.Run for a new acceptance.
 	// Nil when Replay is set or when no terminal persistence is needed.

@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/kelindar/llmux"
 	"github.com/kelindar/llmux/audio"
 	"github.com/kelindar/llmux/chat"
+	"github.com/kelindar/llmux/internal/agui"
 	"github.com/kelindar/llmux/internal/anthropic"
 	completions "github.com/kelindar/llmux/internal/completions"
 	"github.com/kelindar/llmux/internal/execution"
@@ -26,20 +28,48 @@ var keep any
 
 type benchCatalog struct {
 	agent chat.Agent
+	info  chat.Info
 }
 
 func (c benchCatalog) List(context.Context) (map[string]chat.Info, error) {
-	return map[string]chat.Info{"bench": {}}, nil
+	return map[string]chat.Info{"bench": c.info}, nil
 }
 
 func (c benchCatalog) Load(context.Context, string) (chat.Agent, chat.Info, error) {
-	return c.agent, chat.Info{}, nil
+	return c.agent, c.info, nil
+}
+
+// benchStore isolates adapter/lifecycle overhead from application persistence.
+type benchStore struct{}
+
+func (benchStore) Load(context.Context, string) ([]chat.Item, error) { return nil, nil }
+func (benchStore) Accept(context.Context, *chat.TurnRequest) (chat.Acceptance, error) {
+	return chat.Acceptance{Finish: func(context.Context, *chat.Response, error) error { return nil }}, nil
+}
+
+func aguiWorkload(ui bool) (*llmux.Handler, []byte) {
+	const payload = `{"kind":"ui","format":"a2ui","version":"0.9.1","catalogId":"example/v1","payload":[{"version":"v0.9.1","createSurface":{"surfaceId":"form","catalogId":"example/v1"}},{"version":"v0.9.1","updateComponents":{"surfaceId":"form","components":[{"id":"root","component":"Text","text":"Hello"}]}},{"version":"v0.9.1","updateDataModel":{"surfaceId":"form","value":{}}}]}`
+	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		if err := emit.Text("ok"); err != nil {
+			return chat.Outcome{}, err
+		}
+		if ui {
+			return chat.Outcome{}, emit(chat.OutputItem(chat.Item{Type: chat.ItemExtension, Data: jsontext.Value(payload)}))
+		}
+		return chat.Outcome{}, nil
+	})
+	info := chat.Info{Continuation: true, Extensions: map[string]bool{"x-ui": true}}
+	handler := llmux.New(benchCatalog{agent: agent, info: info}, llmux.WithAGUI(), llmux.WithStore(benchStore{}))
+	body := []byte(`{"threadId":"thread","runId":"run","messages":[{"id":"message","role":"user","content":"hello"}],"forwardedProps":{"llmux":{"target":"bench","ui":{"format":"a2ui","version":"0.9.1","catalogId":"example/v1"}}}}`)
+	return handler, body
 }
 
 func main() {
 	chatBody := []byte(`{"model":"bench","messages":[{"role":"user","content":"hello"}]}`)
 	responsesBody := []byte(`{"model":"bench","input":"hello"}`)
 	anthropicBody := []byte(`{"model":"bench","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+	aguiText, aguiBody := aguiWorkload(false)
+	aguiUI, _ := aguiWorkload(true)
 
 	agent := chat.AgentFunc(func(ctx context.Context, req *chat.Request, emit chat.Emit) (chat.Outcome, error) {
 		return chat.Outcome{}, emit(chat.Text("ok"))
@@ -54,6 +84,9 @@ func main() {
 	)
 
 	bench.Run(func(b *bench.B) {
+		b.Run("agui/parse", func(int) { keep, _ = agui.ParseRequest(aguiBody) })
+		b.Run("agui/text", func(int) { keep = serve(aguiText, "/ag-ui", aguiBody, "") })
+		b.Run("agui/ui", func(int) { keep = serve(aguiUI, "/ag-ui", aguiBody, "") })
 		b.Run("exec/run", func(int) {
 			result, err := execution.Run(context.Background(), &chat.Request{Target: "bench"}, agent, chat.DefaultLimits(), nil)
 			if err != nil {
