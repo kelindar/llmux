@@ -26,6 +26,7 @@ type Option func(*Handler)
 type Handler struct {
 	catalog      Catalog
 	store        Store
+	aguiEnabled  bool
 	mcpEnabled   bool
 	mcp          *mcp.Transport
 	limits       chat.Limits
@@ -99,6 +100,15 @@ func WithErrorLog(logf func(context.Context, error)) Option {
 // remains outside llmux.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/ag-ui":
+		switch {
+		case !h.aguiEnabled:
+			writeProtocolError(w, protocolAGUI, notFoundError())
+		case r.Method != http.MethodPost:
+			writeProtocolError(w, protocolAGUI, methodError(r.Method))
+		default:
+			h.serveAGUI(w, r)
+		}
 	case "/chat/completions":
 		switch r.Method {
 		case http.MethodPost:
@@ -327,6 +337,8 @@ func (h *Handler) validateParsed(parsed *parsedRequest, caps chat.Info) error {
 	req := &parsed.Request
 	caps = caps.Normalize()
 	switch {
+	case parsed.Kind != protocolAGUI && caps.Extensions["x-ui"]:
+		return chat.Unsupported("model", "UI-enabled agents require the AG-UI endpoint")
 	case strings.TrimSpace(req.Target) == "":
 		return chat.Invalid("model", "model is required")
 	case req.Controls.MaxOutputTokens != nil && !caps.GenerationControls.Has(chat.ControlMaxOutputTokens):

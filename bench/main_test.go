@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/kelindar/llmux/chat"
 	"github.com/kelindar/llmux/internal/anthropic"
 	completions "github.com/kelindar/llmux/internal/completions"
+	"github.com/kelindar/llmux/internal/execution"
 	"github.com/kelindar/llmux/internal/responses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,4 +119,62 @@ func BenchmarkRequestPaths(b *testing.B) {
 			keep = serve(handler, "/messages", anthropicBody, "anthropic-version: 2023-06-01")
 		}
 	})
+}
+
+// BenchmarkTransport keeps the existing text path comparable across adapter changes.
+func BenchmarkTransport(b *testing.B) {
+	agent := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit.Text("ok")
+	})
+	handler := llmux.New(benchCatalog{agent: agent})
+	body := []byte(`{"model":"bench","stream":true,"input":"hello"}`)
+	b.Run("text", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			keep = serve(handler, "/responses", body, "")
+		}
+	})
+	ui := chat.AgentFunc(func(_ context.Context, _ *chat.Request, emit chat.Emit) (chat.Outcome, error) {
+		return chat.Outcome{}, emit(chat.OutputItem(chat.Item{Type: chat.ItemExtension, Data: jsontext.Value(`{"kind":"ui","format":"a2ui","version":"0.9.1","catalogId":"example/v1","payload":[{"version":"v0.9.1","createSurface":{"surfaceId":"form","catalogId":"example/v1"}},{"version":"v0.9.1","updateComponents":{"surfaceId":"form","components":[{"id":"root","component":"Text","text":"Hello"}]}},{"version":"v0.9.1","updateDataModel":{"surfaceId":"form","value":{}}}]}`)}))
+	})
+	b.Run("ui-execution", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			result, err := execution.Run(context.Background(), &chat.Request{Target: "bench"}, ui, chat.DefaultLimits(), nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			keep = result
+		}
+	})
+	for _, ui := range []bool{false, true} {
+		handler, body := aguiWorkload(ui)
+		name := "agui/text"
+		if ui {
+			name = "agui/ui"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				keep = serve(handler, "/ag-ui", body, "")
+			}
+		})
+	}
+}
+
+func TestAGUIWorkload(t *testing.T) {
+	store := benchStore{}
+	items, err := store.Load(context.Background(), "response")
+	require.NoError(t, err)
+	assert.Empty(t, items)
+	acceptance, err := store.Accept(context.Background(), &chat.TurnRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, acceptance.Finish)
+	assert.NoError(t, acceptance.Finish(context.Background(), &chat.Response{}, nil))
+	for _, ui := range []bool{false, true} {
+		handler, body := aguiWorkload(ui)
+		rec := serve(handler, "/ag-ui", body, "")
+		assert.Contains(t, rec.Body.String(), "RUN_FINISHED")
+		assert.Equal(t, ui, bytes.Contains(rec.Body.Bytes(), []byte("llmux.item")))
+	}
 }

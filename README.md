@@ -77,6 +77,7 @@ Paths are exact. Mount under a prefix with `http.StripPrefix` (for example
 | `POST /audio/transcriptions` | OpenAI transcription | Requires `WithTranscriber` |
 | `POST /audio/speech` | OpenAI speech | Requires `WithSpeaker` |
 | `POST /mcp` | MCP Streamable HTTP | Requires `WithMCP` |
+| `POST /ag-ui` | AG-UI stored-turn profile | Requires `WithAGUI` and `WithStore` |
 
 Unsupported recognized features return protocol errors instead of being
 ignored. Responses is a compatibility subset, not full OpenAI parity.
@@ -136,6 +137,18 @@ validation, limits, Store, and Finish path as the chat endpoints. Put your
 auth middleware in front of `/mcp`; llmux does not implement OAuth.
 
 See [`examples/mcp`](examples/mcp).
+
+## AG-UI
+
+`WithAGUI()` enables a stored-turn HTTP/SSE profile tested with
+`@ag-ui/client` and `@ag-ui/core` 1.0.1. Each request sends one new user message
+or one declared UI action. The application owns authorization, thread
+resolution, deduplication, catalog validation, and persistence through the
+existing Store and Agent contracts. Complete rich items are delivered after
+`Finish` succeeds.
+
+See the [profile contract](docs/agui.md) and the runnable
+[form/action example](examples/agui).
 
 ## Media and audio
 

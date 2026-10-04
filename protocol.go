@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kelindar/llmux/chat"
+	"github.com/kelindar/llmux/internal/agui"
 	"github.com/kelindar/llmux/internal/anthropic"
 	completions "github.com/kelindar/llmux/internal/completions"
 	"github.com/kelindar/llmux/internal/execution"
@@ -26,6 +27,7 @@ const (
 	protocolChat      = internalprotocol.Chat
 	protocolResponses = internalprotocol.Responses
 	protocolAnthropic = internalprotocol.Anthropic
+	protocolAGUI      = internalprotocol.AGUI
 )
 
 type parsedRequest = internalprotocol.ParsedRequest
@@ -35,6 +37,8 @@ type streamEncoder = internalprotocol.StreamEncoder
 
 func adapterFor(p protocol) protocolAdapter {
 	switch p {
+	case protocolAGUI:
+		return agui.NewAdapter()
 	case protocolChat:
 		return completions.NewAdapter()
 	case protocolResponses:
@@ -98,7 +102,11 @@ func anthropicErrorType(err *chat.Error) string {
 }
 
 func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed parsedRequest) {
-	prep, err := h.prepareTurn(r.Context(), r.Header.Get("Idempotency-Key"), &parsed)
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if parsed.Kind == protocolAGUI {
+		idempotencyKey = parsed.RunID
+	}
+	prep, err := h.prepareTurn(r.Context(), idempotencyKey, &parsed)
 	if err != nil {
 		h.logError(r.Context(), err)
 		writeProtocolError(w, parsed.Kind, err)
@@ -111,6 +119,9 @@ func (h *Handler) serveParsed(w http.ResponseWriter, r *http.Request, parsed par
 	}
 
 	validateEvent := h.outputValidator(&parsed, prep.info, prep.acceptance.Activity, adapter)
+	if parsed.Kind == protocolAGUI {
+		prep.agent = uiAgent{agent: prep.agent, validate: validateEvent}
+	}
 	if parsed.Stream {
 		if prep.acceptance.RunTimeout < 0 {
 			invalid := chat.Invalid("run_timeout", "run timeout must be zero or positive")
@@ -179,7 +190,13 @@ func (h *Handler) prepareTurn(ctx context.Context, idempotencyKey string, parsed
 	acceptance.Response = meta.Response
 
 	if acceptance.Replay != nil {
+		if parsed.Kind == protocolAGUI && acceptance.Replay.Status == chat.StatusInProgress {
+			return turnPrep{}, activeRun(*acceptance.Replay)
+		}
 		return turnPrep{info: info, acceptance: acceptance, meta: meta, replay: acceptance.Replay}, nil
+	}
+	if parsed.Kind == protocolAGUI && acceptance.Finish == nil {
+		return turnPrep{}, chat.Unsupported("store", "AG-UI acceptance requires a persistence Finish callback")
 	}
 
 	agent = executionAgent(agent, acceptance)
@@ -221,12 +238,17 @@ func (h *Handler) failAccepted(ctx context.Context, acceptance chat.Acceptance, 
 func (h *Handler) outputValidator(parsed *parsedRequest, info chat.Info, activity bool, adapter protocolAdapter) func(chat.Event) error {
 	return func(event chat.Event) error {
 		switch {
+		case parsed.Kind == protocolAGUI && event.Type == chat.EventItem && event.Item.Type == chat.ItemExtension && len(parsed.Request.Controls.Extensions["x-ui"]) == 0:
+			return chat.Unsupported("output", "UI output requires declared client catalog support")
 		case parsed.Kind == protocolResponses && requiresImageGeneration(event) && !parsed.Request.Controls.ImageGeneration:
 			return chat.Unsupported("output", "image output requires the Responses image_generation tool")
 		case internalprotocol.RequiresReasoningSummary(event) && (parsed.Request.Controls.Reasoning == nil || !parsed.Request.Controls.Reasoning.Summary):
 			return chat.Unsupported("reasoning.summary", "reasoning summary output was not requested")
 		case event.Type == chat.EventActivity && !activity:
 			return chat.Unsupported("output", "activity events were not enabled for this request")
+		}
+		if parsed.Kind == protocolAGUI && event.Type == chat.EventItem && event.Item.Type == chat.ItemExtension {
+			return agui.MatchesSupport(event.Item, parsed.Request.Controls.Extensions["x-ui"])
 		}
 		if adapter != nil {
 			if err := adapter.ValidateEvent(event); err != nil {
@@ -245,13 +267,14 @@ func (h *Handler) outputValidator(parsed *parsedRequest, info chat.Info, activit
 
 // acceptContext applies Store.Accept for one canonical request. Idempotency keys
 // come from the calling protocol: the Idempotency-Key header for chat
-// endpoints and none for MCP tool calls. CatalogAgent is the Agent returned by
+// endpoints, runId for AG-UI, and none for MCP tool calls. CatalogAgent is the Agent returned by
 // Catalog.Load for the request target.
 func (h *Handler) acceptContext(ctx context.Context, idempotencyKey string, parsed *parsedRequest, catalogAgent chat.Agent) (chat.Acceptance, bool, error) {
 	if h.store == nil {
 		return chat.Acceptance{}, false, nil
 	}
 	accepted, err := h.store.Accept(ctx, &chat.TurnRequest{
+		Thread:         parsed.Thread,
 		Request:        &parsed.Request,
 		Turn:           parsed.Turn,
 		Previous:       parsed.Previous,

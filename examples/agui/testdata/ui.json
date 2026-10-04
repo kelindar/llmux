@@ -1,0 +1,90 @@
+{
+  "form": {
+    "kind": "ui",
+    "format": "a2ui",
+    "version": "0.9.1",
+    "catalogId": "https://example.invalid/llmux/agui/catalog/v1",
+    "payload": [
+      {
+        "version": "v0.9.1",
+        "createSurface": {
+          "surfaceId": "contact-form",
+          "catalogId": "https://example.invalid/llmux/agui/catalog/v1",
+          "sendDataModel": false
+        }
+      },
+      {
+        "version": "v0.9.1",
+        "updateComponents": {
+          "surfaceId": "contact-form",
+          "components": [
+            { "id": "root", "component": "Card", "child": "form" },
+            { "id": "form", "component": "Column", "children": ["title", "name", "email", "submit-label", "submit"] },
+            { "id": "title", "component": "Text", "text": "Contact request", "variant": "h2" },
+            { "id": "name", "component": "TextField", "label": "Name", "value": { "path": "/contact/name" }, "variant": "shortText" },
+            { "id": "email", "component": "TextField", "label": "Email", "value": { "path": "/contact/email" }, "variant": "shortText" },
+            { "id": "submit-label", "component": "Text", "text": "Send request" },
+            {
+              "id": "submit",
+              "component": "Button",
+              "child": "submit-label",
+              "variant": "primary",
+              "action": {
+                "event": {
+                  "name": "submit_contact",
+                  "context": {
+                    "name": { "path": "/contact/name" },
+                    "email": { "path": "/contact/email" }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "version": "v0.9.1",
+        "updateDataModel": {
+          "surfaceId": "contact-form",
+          "path": "/",
+          "value": { "contact": { "name": "", "email": "" } }
+        }
+      }
+    ]
+  },
+  "result": {
+    "kind": "ui",
+    "format": "a2ui",
+    "version": "0.9.1",
+    "catalogId": "https://example.invalid/llmux/agui/catalog/v1",
+    "payload": [
+      {
+        "version": "v0.9.1",
+        "createSurface": {
+          "surfaceId": "contact-result",
+          "catalogId": "https://example.invalid/llmux/agui/catalog/v1"
+        }
+      },
+      {
+        "version": "v0.9.1",
+        "updateComponents": {
+          "surfaceId": "contact-result",
+          "components": [
+            { "id": "root", "component": "Card", "child": "content" },
+            { "id": "content", "component": "Column", "children": ["title", "summary"] },
+            { "id": "title", "component": "Text", "text": "Request saved", "variant": "h2" },
+            { "id": "summary", "component": "Text", "text": { "path": "/result/summary" } }
+          ]
+        }
+      },
+      {
+        "version": "v0.9.1",
+        "updateDataModel": {
+          "surfaceId": "contact-result",
+          "path": "/",
+          "value": { "result": { "summary": "We saved your contact request." } }
+        }
+      }
+    ]
+  }
+}

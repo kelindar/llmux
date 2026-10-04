@@ -69,6 +69,12 @@ type Catalog interface {
 //
 // Activity: set Acceptance.Activity and emit Activity(name, json). Keep
 // application-specific fields outside standard envelopes.
+//
+// AG-UI requires this Store and a Finish callback for every new acceptance.
+// Accept owns Thread authorization/correlation and request deduplication.
+// Return authoritative thread_id and application references in Response.Metadata.
+// An active Replay is an HTTP conflict; terminal Replay never runs or finishes
+// the Agent again. Finish must persist UI before returning success.
 type Store interface {
 	Load(context.Context, string) ([]chat.Item, error)
 	Accept(context.Context, *chat.TurnRequest) (chat.Acceptance, error)
