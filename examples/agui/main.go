@@ -202,7 +202,7 @@ func (a *contactAgent) Run(ctx context.Context, req *chat.Request, emit chat.Emi
 		if err := emit.Text("Fill in the contact request and submit it."); err != nil {
 			return chat.Outcome{}, err
 		}
-		return chat.Outcome{}, emit(chat.OutputItem(uiItem("contact-form", a.ui.Form)))
+		return chat.Outcome{}, emit(chat.OutputItem(uiItem("", a.ui.Form)))
 	}
 
 	name := strings.TrimSpace(selected.Context["name"])
@@ -211,7 +211,7 @@ func (a *contactAgent) Run(ctx context.Context, req *chat.Request, emit chat.Emi
 	if err := emit.Text(fmt.Sprintf("Contact request saved for %s (%s).", name, email)); err != nil {
 		return chat.Outcome{}, err
 	}
-	return chat.Outcome{}, emit(chat.OutputItem(uiItem("contact-result", a.ui.Result)))
+	return chat.Outcome{}, emit(chat.OutputItem(uiItem("", a.ui.Result)))
 }
 
 func uiItem(id string, data json.RawMessage) chat.Item {

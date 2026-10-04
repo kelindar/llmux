@@ -156,6 +156,15 @@ async function runProof(baseURL: string): Promise<void> {
   await expectError(baseURL, request(form.threadId, actionRunId, [], form.responseId, changed), 409, "idempotency_conflict");
   await expectError(baseURL, request(form.threadId, "stale-run-1", [], form.responseId, action), 409, "stale_parent");
   assert.deepEqual(await readState(baseURL), stateAfterAction, "conflicts perform no agent call or action effect");
+
+  const nextMessage: Message = { id: "message-2", role: "user", content: "Show me another contact form." };
+  agent.addMessage(nextMessage);
+  agent.setTurn([nextMessage]);
+  const nextForm = await runTurn(agent, "next-form-run", props(result.responseId));
+  assert.equal(nextForm.items.length, 1);
+  assert.notEqual(nextForm.items[0].id, form.items[0].id, "new turns get new canonical item IDs");
+  assert.deepEqual(nextForm.items[0].payload, fixture.form.payload);
+  assert.deepEqual(await readState(baseURL), { agentRuns: 3, actionEffects: 1, storedResponses: 3 }, "history must not execute an old action again");
 }
 
 async function runTurn(agent: TurnAgent, runId: string, forwardedProps: ForwardedProps): Promise<RunSnapshot> {
